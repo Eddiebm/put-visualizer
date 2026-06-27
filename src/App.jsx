@@ -2,6 +2,50 @@ import React, { useMemo, useState, useEffect, useRef } from "react";
 
 const STORAGE_KEY = "csp_visualizer_inputs_v1";
 const JOURNAL_KEY = "csp_journal_v1";
+const TOUR_KEY = "csp_tour_done_v1";
+
+const TOUR_STEPS = [
+  {
+    title: "Welcome",
+    body: "This tool shows the honest P&L of three options income strategies. You can see exactly what you can win — and more importantly, what you can lose. No hype, no streak counters.",
+    icon: "📊",
+  },
+  {
+    title: "Pick a company",
+    body: "Choose a stock from the dropdown and it auto-fills the current share price and sets a sensible strike. Or skip it and type your own strike manually.",
+    icon: "🏢",
+  },
+  {
+    title: "Choose a strategy",
+    body: "Cash-secured put (simplest — sell one put, hold cash). Short strangle (sell a put and call — the naked call has no loss ceiling). Covered strangle (you own the shares too).",
+    icon: "⚖️",
+  },
+  {
+    title: "Pull a real premium",
+    body: 'Pick an expiration date, then hit "Pull real premium →" — it fetches the real bid/ask midpoint from the live options chain and fills it in for you.',
+    icon: "💰",
+  },
+  {
+    title: "Read the chart",
+    body: "The flat green line is the most you can ever make. The red pulsing dot is where you land if the stock moves against you. That gap between them is the whole story.",
+    icon: "📈",
+  },
+  {
+    title: "Scenario cards",
+    body: "Three cards below the chart show your exact P&L if the stock goes down, stays flat, or goes up. Red is a loss — it's never hidden.",
+    icon: "🎯",
+  },
+  {
+    title: "Order ticket",
+    body: "The order ticket gives you the exact words to use at your broker — copy it and paste it directly into the order screen.",
+    icon: "📋",
+  },
+  {
+    title: "Paper journal",
+    body: "Log trades you're watching. When they close, record what actually happened — wins and losses equally. An honest record only works if you log the bad weeks too.",
+    icon: "📓",
+  },
+];
 
 // Bundled snapshot prices — used instantly on selection and as the offline
 // fallback when the live /api/quote endpoint is unreachable. Editable; the UI
@@ -122,7 +166,15 @@ export default function App() {
   const [expiration, setExpiration] = useState(defaultExpiration);
   const [premQuote, setPremQuote] = useState({ status: "idle" });
   const [journal, setJournal] = useState(loadJournal);
+  const [tourStep, setTourStep] = useState(() => {
+    try { return localStorage.getItem(TOUR_KEY) ? null : 0; } catch { return 0; }
+  });
   const appliedRef = useRef(null);
+
+  function dismissTour() {
+    try { localStorage.setItem(TOUR_KEY, "1"); } catch { /* ignore */ }
+    setTourStep(null);
+  }
 
   useEffect(() => {
     try {
@@ -259,6 +311,9 @@ export default function App() {
   return (
     <div style={styles.page}>
       <style>{keyframes}</style>
+      {tourStep !== null && (
+        <Tour step={tourStep} onNext={() => setTourStep((s) => s + 1)} onDone={dismissTour} onSkip={dismissTour} />
+      )}
       <div style={styles.shell}>
         <header style={styles.header}>
           <h1 style={styles.h1}>Options Income — Honest P&L</h1>
@@ -994,6 +1049,39 @@ function Scenarios({ cards }) {
   );
 }
 
+function Tour({ step, onNext, onDone, onSkip }) {
+  const s = TOUR_STEPS[step];
+  const isLast = step === TOUR_STEPS.length - 1;
+  return (
+    <div style={styles.tourOverlay}>
+      <div style={styles.tourCard}>
+        <div style={styles.tourIcon}>{s.icon}</div>
+        <div style={styles.tourMeta}>
+          {step + 1} of {TOUR_STEPS.length}
+        </div>
+        <div style={styles.tourTitle}>{s.title}</div>
+        <div style={styles.tourBody}>{s.body}</div>
+        <div style={styles.tourActions}>
+          <button type="button" onClick={onSkip} style={styles.tourSkip}>
+            Skip
+          </button>
+          <button type="button" onClick={isLast ? onDone : onNext} style={styles.tourNext}>
+            {isLast ? "Got it" : "Next →"}
+          </button>
+        </div>
+        <div style={styles.tourDots}>
+          {TOUR_STEPS.map((_, i) => (
+            <span
+              key={i}
+              style={{ ...styles.tourDot, background: i === step ? "#1f2937" : "#e2e8f0" }}
+            />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function Stat({ label, value, tone }) {
   const color = tone === "good" ? "#16a34a" : tone === "bad" ? "#ef4444" : "#0f172a";
   return (
@@ -1082,4 +1170,15 @@ const styles = {
   journalPnl: { fontSize: 16, fontWeight: 700, letterSpacing: "-0.01em" },
   journalNote: { fontSize: 12, color: "#cf9a3a", marginTop: 12, lineHeight: 1.5 },
   deleteBtn: { border: "none", background: "transparent", color: "#cbd5e1", fontSize: 14, cursor: "pointer", padding: "4px 6px", lineHeight: 1 },
+  tourOverlay: { position: "fixed", inset: 0, background: "rgba(15,23,42,0.55)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 },
+  tourCard: { background: "#fff", borderRadius: 20, padding: "32px 28px 24px", maxWidth: 400, width: "100%", boxShadow: "0 24px 64px rgba(15,23,42,0.18)", textAlign: "center" },
+  tourIcon: { fontSize: 40, marginBottom: 10 },
+  tourMeta: { fontSize: 12, color: "#94a3b8", fontWeight: 600, letterSpacing: "0.05em", marginBottom: 8 },
+  tourTitle: { fontSize: 20, fontWeight: 700, letterSpacing: "-0.02em", color: "#0f172a", marginBottom: 12 },
+  tourBody: { fontSize: 14, color: "#475569", lineHeight: 1.6, marginBottom: 24 },
+  tourActions: { display: "flex", gap: 10, justifyContent: "center", marginBottom: 20 },
+  tourSkip: { border: "1px solid #e2e8f0", borderRadius: 10, background: "#fff", color: "#94a3b8", fontSize: 13, fontWeight: 600, padding: "10px 20px", cursor: "pointer" },
+  tourNext: { border: "none", borderRadius: 10, background: "#1f2937", color: "#fff", fontSize: 13, fontWeight: 700, padding: "10px 24px", cursor: "pointer" },
+  tourDots: { display: "flex", gap: 6, justifyContent: "center" },
+  tourDot: { width: 6, height: 6, borderRadius: "50%", display: "inline-block" },
 };
