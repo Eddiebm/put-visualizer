@@ -56,6 +56,8 @@ export default async function handler(req) {
       return json({ error: "no priced quote for the nearest contract" }, 404);
     }
 
+    const iv = best.snap?.impliedVolatility ?? best.snap?.greeks?.impliedVolatility ?? null;
+
     return json(
       {
         available: true,
@@ -67,6 +69,7 @@ export default async function handler(req) {
         premium,
         bid: Number.isFinite(bid) ? bid : null,
         ask: Number.isFinite(ask) ? ask : null,
+        iv: Number.isFinite(iv) && iv > 0 ? iv : null,
         source: "alpaca",
       },
       200,

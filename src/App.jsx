@@ -255,6 +255,7 @@ const DEFAULTS = {
   contracts: 2,
   dropPct: 20,
   capital: 500,
+  iv: null,
 };
 
 function loadInputs() {
@@ -355,7 +356,7 @@ export default function App() {
       .then((d) => {
         if (d && d.available === false) return setPremQuote({ status: "nokey" });
         if (!d || !Number.isFinite(d.premium)) return Promise.reject();
-        setInputs((s) => ({ ...s, premium: round2(d.premium) }));
+        setInputs((s) => ({ ...s, premium: round2(d.premium), iv: d.iv ?? null }));
         setPremQuote({ status: "live", ...d });
       })
       .catch(() => setPremQuote({ status: "error" }));
@@ -398,7 +399,14 @@ export default function App() {
   const contracts = Math.max(0, Math.round(num(inputs.contracts)));
   const dropPct = num(inputs.dropPct);
   const capital = num(inputs.capital);
+  const iv = inputs.iv != null ? Number(inputs.iv) : null;
   const shares = contracts * 100;
+
+  const dte = useMemo(() => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(expiration)) return 30;
+    const d = new Date(expiration + "T12:00:00Z");
+    return Math.max(1, Math.round((d - Date.now()) / 86400000));
+  }, [expiration]);
 
   const spreadWidth = Math.max(0, putStrike - longStrike);
   const perContractCash =
@@ -407,7 +415,7 @@ export default function App() {
       : putStrike * 100 + (mode === "covered" ? spot * 100 : 0);
   const maxContracts = perContractCash > 0 ? Math.floor(capital / perContractCash) : 0;
 
-  const p = { mode, putStrike, putPrem, longStrike, longPrem, callStrike, callPrem, spot, shares };
+  const p = { mode, putStrike, putPrem, longStrike, longPrem, callStrike, callPrem, spot, shares, iv, dte, ticker };
 
   const model = useMemo(() => buildModel(p, dropPct), [
     mode,
@@ -420,6 +428,8 @@ export default function App() {
     spot,
     shares,
     dropPct,
+    iv,
+    dte,
   ]);
 
   function logTrade() {
@@ -604,6 +614,12 @@ export default function App() {
 
         <Scenarios cards={model.scenarios} />
 
+        {model.loseCondition && (
+          <div style={{ fontSize: 13, color: "#475569", background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 8, padding: "10px 14px", margin: "0 0 4px", lineHeight: 1.55 }}>
+            {model.loseCondition}
+          </div>
+        )}
+
         <Ticket
           mode={mode}
           ticker={ticker}
@@ -619,10 +635,13 @@ export default function App() {
         />
 
         <section style={styles.stats}>
-          <Stat label={mode === "covered" ? "Capital tied up" : "Collateral"} value={money(model.collateral)} tone="neutral" />
+          <Stat label={model.worstLabel} value={model.worstValue} tone="bad" big />
           <Stat label="Premium collected" value={money(model.credit)} tone="good" />
           <Stat label={model.breakevens.length > 1 ? "Breakevens" : "Breakeven"} value={model.breakevenLabel} tone="neutral" />
-          <Stat label={model.worstLabel} value={model.worstValue} tone="bad" />
+          <Stat label={mode === "covered" ? "Capital tied up" : "Collateral"} value={money(model.collateral)} tone="neutral" />
+          {model.probProfit != null && (
+            <Stat label="Prob. of profit (IV-implied)" value={`${model.probProfit}%`} tone="neutral" />
+          )}
         </section>
 
         <Journal journal={journal} onLog={logTrade} onClose={closeTrade} onDelete={deleteTrade} />
@@ -650,8 +669,27 @@ export default function App() {
 }
 
 // ---------- model builder: one place, all modes ----------
+// Standard normal CDF (Abramowitz & Stegun approximation)
+function normCdf(z) {
+  const a = [0.3193815, -0.3565638, 1.7814779, -1.8212560, 1.3302744];
+  const t = 1 / (1 + 0.2316419 * Math.abs(z));
+  let poly = 0;
+  for (let i = a.length - 1; i >= 0; i--) poly = poly * t + a[i];
+  const d = 0.3989423 * Math.exp(-0.5 * z * z) * t * poly;
+  return z >= 0 ? 1 - d : d;
+}
+
+// Lognormal PDF for stock price S given current price S0, IV, and time T (in years)
+function lnDensity(S, S0, iv, T) {
+  if (S <= 0 || S0 <= 0 || !(iv > 0) || !(T > 0)) return 0;
+  const sigmaLn = iv * Math.sqrt(T);
+  const muLn = Math.log(S0) - 0.5 * sigmaLn * sigmaLn;
+  const z = (Math.log(S) - muLn) / sigmaLn;
+  return Math.exp(-0.5 * z * z) / (S * sigmaLn * Math.sqrt(2 * Math.PI));
+}
+
 function buildModel(p, dropPct) {
-  const { mode, putStrike, longStrike, callStrike, spot, shares } = p;
+  const { mode, putStrike, longStrike, callStrike, spot, shares, iv, dte } = p;
 
   const credit =
     mode === "spread"
@@ -674,18 +712,32 @@ function buildModel(p, dropPct) {
   const move = dropPct / 100;
   const moveLbl = trimNum(dropPct);
 
-  // scenario prices
-  const downPrice = mode === "spread" ? longStrike * (1 - move) : putStrike * (1 - move);
+  // σ-anchored scenario prices when IV is available, else fall back to dropPct
+  const hasIv = iv > 0 && dte > 0;
+  const T = (dte || 30) / 365;
+  const sigma1 = hasIv ? spot * iv * Math.sqrt(T) : 0;
+
+  const down1Price = hasIv ? Math.max(0.01, spot - sigma1) : putStrike * (1 - move);
+  const down2Price = hasIv ? Math.max(0.01, spot - 2 * sigma1) : putStrike * (1 - move * 1.5);
   const upPrice = (mode === "put" || mode === "spread" ? putStrike : callStrike) * (1 + move);
   const flatPrice =
     mode === "covered" ? spot
     : mode === "strangle" ? (putStrike + callStrike) / 2
     : putStrike;
 
-  const downPnl = stratPnl(downPrice, p);
+  const down1Pnl = stratPnl(down1Price, p);
+  const down2Pnl = stratPnl(down2Price, p);
   const flatPnl = stratPnl(flatPrice, p);
   const upPnl = stratPnl(upPrice, p);
   const midPnl = mode === "spread" ? stratPnl((putStrike + longStrike) / 2, p) : null;
+
+  // Labels for σ scenarios
+  const down1Lbl = hasIv
+    ? `1σ drop → ${money2(down1Price)}`
+    : `−${moveLbl}% → ${money2(down1Price)}`;
+  const down2Lbl = hasIv
+    ? `2σ drop → ${money2(down2Price)}`
+    : `−${trimNum(dropPct * 1.5)}% → ${money2(down2Price)}`;
 
   const scenarios =
     mode === "spread"
@@ -695,6 +747,7 @@ function buildModel(p, dropPct) {
             title: "Falls below long strike",
             sub: `below ${money2(longStrike)} · max loss`,
             pnl: stratPnl(longStrike * 0.97, p),
+            isWorst: true,
             note: `Both puts are deep in the money. Your long put offsets the short put exactly — loss is capped here. You can't lose more than ${money2(Math.max(0, putStrike - longStrike) - (p.putPrem - p.longPrem))} per share no matter how far it falls.`,
           },
           {
@@ -712,40 +765,65 @@ function buildModel(p, dropPct) {
             note: "The short put is in the money but the long put isn't fully offsetting yet. Partial loss — worse than the flat case, better than max loss.",
           },
         ]
-      : [
+      : mode === "strangle"
+      ? [
+          {
+            key: "up",
+            title: "If it runs up",
+            sub: `+${moveLbl}% · call loses, no ceiling`,
+            pnl: upPnl,
+            isWorst: true,
+            note: "The naked call bites. This loss keeps growing the higher it goes — there is no ceiling. This is the scenario the ads skip.",
+          },
           {
             key: "down",
-            title: "If it goes down",
-            sub: `−${moveLbl}% → ${money2(downPrice)}`,
-            pnl: downPnl,
-            note:
-              mode === "covered"
-                ? "You lose on the shares AND get assigned on the put — double the downside."
-                : "Assigned below breakeven. The loss has real room to run — the side the videos skip.",
+            title: hasIv ? "1σ drop" : "If it falls",
+            sub: down1Lbl,
+            pnl: down1Pnl,
+            isWorst: down1Pnl < 0,
+            note: "Put goes in the money. Call expires worthless. Loss depends on how far below the put strike it closes.",
           },
           {
             key: "flat",
-            title: "If it stays flat",
-            sub: mode === "put" ? "unchanged" : mode === "covered" ? `at ${money2(spot)}` : "between strikes",
+            title: "Stays between strikes",
+            sub: `between ${money2(putStrike)} and ${money2(callStrike)}`,
             pnl: flatPnl,
-            note:
-              mode === "put"
-                ? "Put expires worthless — you keep the full premium."
-                : "Both options expire worthless — you keep both premiums. The sweet spot.",
+            note: "Both options expire worthless — you keep both premiums. This is the sweet spot.",
+          },
+        ]
+      : [
+          {
+            key: "down2",
+            title: hasIv ? "2σ drop (tail risk)" : "Bad drop",
+            sub: down2Lbl,
+            pnl: down2Pnl,
+            isWorst: true,
+            note: mode === "covered"
+              ? "Shares lose value AND you're assigned on the put — double the downside. This is the case to size for, not the premium."
+              : `Assigned well below breakeven. ${hasIv ? "A 2σ move is uncommon but not rare — it happens." : "The side the ads skip."}`,
           },
           {
-            key: "up",
-            title: "If it goes up",
-            sub: `+${moveLbl}% → ${money2(upPrice)}`,
-            pnl: upPnl,
-            note:
-              mode === "put"
-                ? "Put expires worthless — you keep the premium, and only the premium, however high it climbs."
-                : mode === "strangle"
-                ? "The naked call bites. This loss keeps growing the higher it goes — no ceiling."
-                : "Shares called away at the call strike. Gains are capped here — you don't lose, but you give up the upside.",
+            key: "down1",
+            title: hasIv ? "1σ drop (expected move)" : "Mild drop",
+            sub: down1Lbl,
+            pnl: down1Pnl,
+            isWorst: down1Pnl < 0,
+            note: hasIv
+              ? `This is exactly the move the options market "expects" — about a 16% chance of closing here or lower. ${down1Pnl >= 0 ? "Your breakeven is below this level — you still profit." : "Your breakeven is above this — already a loss."}`
+              : "A moderate drop tests the breakeven.",
+          },
+          {
+            key: "flat",
+            title: "Stays above strike",
+            sub: "put expires worthless",
+            pnl: flatPnl,
+            note: "Best case — you keep the full premium and the collateral is released.",
           },
         ];
+
+  // "What would have to happen to lose" — computed from first breakeven
+  let loseCondition = null;
+  let probProfit = null;
 
   // chart range
   let xMin, xMax;
@@ -753,10 +831,10 @@ function buildModel(p, dropPct) {
     xMin = longStrike * 0.82;
     xMax = putStrike * 1.15;
   } else if (mode === "put") {
-    xMin = Math.min(downPrice, putStrike * 0.7);
+    xMin = Math.min(down2Price, putStrike * 0.7);
     xMax = putStrike * 1.15;
   } else {
-    xMin = Math.min(downPrice, putStrike * 0.6);
+    xMin = Math.min(down2Price, putStrike * 0.6);
     xMax = Math.max(upPrice, callStrike * 1.35);
   }
 
@@ -778,6 +856,23 @@ function buildModel(p, dropPct) {
   }
   const breakevenLabel = breakevens.length ? breakevens.map((b) => money2(b)).join(" / ") : "—";
 
+  // "What would have to happen to lose" — computed from first breakeven on the put side
+  if (breakevens.length > 0 && spot > 0) {
+    const be = breakevens[0]; // lowest breakeven (put side)
+    const pctDrop = ((spot - be) / spot) * 100;
+    if (pctDrop > 0) {
+      if (hasIv && sigma1 > 0) {
+        const sigmas = (spot - be) / sigma1;
+        const prob = normCdf(sigmas);
+        probProfit = Math.round(prob * 10) / 10;
+        const losePct = Math.round((1 - prob) * 1000) / 10;
+        loseCondition = `You lose money only if ${p.ticker || "the stock"} drops more than ${pctDrop.toFixed(1)}% by expiration. At current IV (${(iv * 100).toFixed(0)}%) that's a ${sigmas.toFixed(1)}σ move — the market prices this as a ${losePct}% chance.`;
+      } else {
+        loseCondition = `You lose money only if the stock drops more than ${pctDrop.toFixed(1)}% by expiration. Pull a live premium to see the IV-based probability.`;
+      }
+    }
+  }
+
   // chart markers and dots
   const markers =
     mode === "spread"
@@ -794,27 +889,28 @@ function buildModel(p, dropPct) {
           { x: longStrike * 0.97, y: stratPnl(longStrike * 0.97, p) },
           { x: (putStrike + longStrike) / 2, y: midPnl },
         ]
-      : [{ x: downPrice, y: downPnl }];
+      : [{ x: down1Price, y: down1Pnl }, ...(hasIv ? [{ x: down2Price, y: down2Pnl }] : [])];
   if (mode === "strangle" || mode === "covered") dots.push({ x: upPrice, y: upPnl });
 
-  // stat strip worst
+  // stat strip — max loss first
   let worstLabel, worstValue;
   if (mode === "strangle") {
-    worstLabel = `Loss if +${moveLbl}% (and rising)`;
+    worstLabel = `Loss if +${moveLbl}% (no ceiling)`;
     worstValue = money(upPnl);
   } else if (mode === "spread") {
     const maxLoss = stratPnl(longStrike * 0.97, p);
     worstLabel = "Max possible loss";
     worstValue = money(maxLoss);
   } else {
-    worstLabel = `Loss on a ${moveLbl}% drop`;
-    worstValue = money(downPnl);
+    worstLabel = hasIv ? "Loss at 2σ drop" : `Loss on −${moveLbl}% drop`;
+    worstValue = money(down2Pnl);
   }
 
   return {
     mode, credit, collateral, maxGain, samples, xMin, xMax,
     markers, dots, scenarios, breakevens, breakevenLabel,
-    worstLabel, worstValue, downPnl, upPnl,
+    worstLabel, worstValue, down1Pnl, down2Pnl, upPnl,
+    loseCondition, probProfit, hasIv, iv, dte, spot,
   };
 }
 
@@ -824,7 +920,7 @@ function Chart({ model }) {
   const pad = { top: 44, right: 44, bottom: 56, left: 44 };
   const plotW = W - pad.left - pad.right;
   const plotH = H - pad.top - pad.bottom;
-  const { samples, xMin, xMax, maxGain, markers, dots } = model;
+  const { samples, xMin, xMax, maxGain, markers, dots, hasIv, iv, dte, spot } = model;
 
   if (!samples || samples.length < 2 || xMax <= xMin) {
     return (
@@ -850,6 +946,23 @@ function Chart({ model }) {
   const line = samples.map(([x, y]) => `${xToPx(x).toFixed(1)},${yToPx(y).toFixed(1)}`).join(" ");
   const zeroY = yToPx(0);
 
+  // Lognormal probability density overlay
+  let densityPts = null;
+  if (hasIv && iv > 0 && dte > 0 && spot > 0) {
+    const T = dte / 365;
+    const densities = samples.map(([x]) => lnDensity(x, spot, iv, T));
+    const maxDen = Math.max(...densities, 1e-10);
+    const denScale = plotH * 0.42 / maxDen;
+    const bottom = H - pad.bottom;
+    const pts = [`${xToPx(xMin).toFixed(1)},${bottom.toFixed(1)}`];
+    samples.forEach(([x], i) => {
+      const py = bottom - densities[i] * denScale;
+      pts.push(`${xToPx(x).toFixed(1)},${py.toFixed(1)}`);
+    });
+    pts.push(`${xToPx(xMax).toFixed(1)},${bottom.toFixed(1)}`);
+    densityPts = pts.join(" ");
+  }
+
   const areaPts = [`${xToPx(xMin).toFixed(1)},${zeroY.toFixed(1)}`];
   for (const [x, y] of samples) areaPts.push(`${xToPx(x).toFixed(1)},${yToPx(Math.min(0, y)).toFixed(1)}`);
   areaPts.push(`${xToPx(xMax).toFixed(1)},${zeroY.toFixed(1)}`);
@@ -862,6 +975,15 @@ function Chart({ model }) {
         <line x1={pad.left} y1={zeroY} x2={W - pad.right} y2={zeroY} stroke="#e9edf3" strokeWidth="1" />
 
         <polygon points={areaPts.join(" ")} fill="rgba(225,76,76,0.06)" />
+
+        {densityPts && (
+          <polygon
+            points={densityPts}
+            fill="rgba(99,102,241,0.10)"
+            stroke="rgba(99,102,241,0.25)"
+            strokeWidth="1"
+          />
+        )}
 
         {Number.isFinite(ceilingY) && (
           <>
@@ -960,6 +1082,10 @@ function Field({ label, value, onChange, prefix, suffix }) {
 function CompanyPicker({ ticker, quote, onSelect, expiration, onExpirationChange, onFetchPremium, premQuote }) {
   return (
     <section style={styles.pickerWrap}>
+      <div style={{ fontSize: 11, color: "#94a3b8", background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 6, padding: "4px 10px", marginBottom: 10, display: "inline-flex", alignItems: "center", gap: 6 }}>
+        <span style={{ width: 7, height: 7, borderRadius: "50%", background: "#d97706", flexShrink: 0, display: "inline-block" }} />
+        Prices are ~15-min delayed · for learning, not live order entry
+      </div>
       <div style={styles.pickerRow}>
         <label style={{ ...styles.field, flex: "1 1 240px", minWidth: 200 }}>
           <span style={styles.fieldLabel}>Company (optional)</span>
@@ -1054,16 +1180,12 @@ function Dot({ color }) {
 function SizingHint({ mode, capital, perContractCash, maxContracts, contracts, dropPct, model, p, onApply }) {
   if (!(perContractCash > 0) || !(capital > 0)) return null;
 
-  const used = maxContracts * perContractCash;
-  const leftover = capital - used;
-  const atMax = contracts === maxContracts && maxContracts > 0;
-
   if (maxContracts < 1) {
     return (
       <div style={styles.sizing}>
         {money(capital)} isn't enough for even one contract — that needs {money(perContractCash)}.{" "}
         {mode === "spread"
-          ? `Narrow the spread (move the long strike closer to the short strike) or widen the long strike.`
+          ? "Narrow the spread or widen the long strike."
           : mode === "covered"
           ? "Lower the strike, or you're short the share cost."
           : "Lower the strike or add cash."}
@@ -1071,33 +1193,72 @@ function SizingHint({ mode, capital, perContractCash, maxContracts, contracts, d
     );
   }
 
-  // loss at max size, on the dangerous side for this mode
-  const big = { ...p, shares: maxContracts * 100 };
-  const lossRef =
-    mode === "strangle"
-      ? stratPnl(model.dots[1]?.x ?? p.callStrike * (1 + dropPct / 100), big)
-      : mode === "spread"
-      ? stratPnl(p.longStrike * 0.97, big)
-      : stratPnl(p.putStrike * (1 - dropPct / 100), big);
+  // Compute 2σ loss price
+  const hasIv = model.hasIv;
+  const T = (model.dte || 30) / 365;
+  const sigma2Price = hasIv
+    ? Math.max(0.01, (model.spot || p.putStrike) - 2 * (model.spot || p.putStrike) * (model.iv || 0) * Math.sqrt(T))
+    : p.putStrike * (1 - dropPct * 2 / 100);
+
+  // Build rows: 1 contract, conservative (half max, min 1), max
+  const sizes = [...new Set([1, Math.max(1, Math.floor(maxContracts / 2)), maxContracts])].filter(n => n >= 1 && n <= maxContracts);
+
+  const lossAtSize = (n) => {
+    const pp = { ...p, shares: n * 100 };
+    if (mode === "strangle") return stratPnl(p.callStrike * (1 + dropPct / 100), pp);
+    if (mode === "spread") return stratPnl(p.longStrike * 0.97, pp);
+    return stratPnl(sigma2Price, pp);
+  };
+
+  const lossLabel = hasIv
+    ? (mode === "strangle" ? `+${trimNum(dropPct)}% adverse` : "2σ drop")
+    : (mode === "strangle" ? `+${trimNum(dropPct)}%` : `−${trimNum(dropPct * 2)}% drop`);
+
+  const atMax = contracts === maxContracts;
 
   return (
     <div style={styles.sizing}>
-      <span>
-        Your {money(capital)} {mode === "covered" ? "funds" : mode === "spread" ? "covers" : "secures"}{" "}
-        <b>
-          {maxContracts} contract{maxContracts === 1 ? "" : "s"}
-        </b>{" "}
-        ({money(used)} tied up, {money(leftover)} left).{" "}
-        {mode === "spread"
-          ? <>Max possible loss at that size: <b style={{ color: "#e14c4c" }}>{money(lossRef)}</b> — capped there no matter how far it falls.</>
-          : <>At that size a {trimNum(dropPct)}% adverse move loses <b style={{ color: "#e14c4c" }}>{money(lossRef)}</b>{mode === "strangle" ? " — and climbs with no ceiling if it keeps running." : " — sizing up multiplies the loss as much as the premium."}</>
-        }
-      </span>
-      {!atMax && (
-        <button type="button" onClick={() => onApply(maxContracts)} style={styles.sizingBtn}>
-          Use max ({maxContracts})
-        </button>
-      )}
+      <div style={{ marginBottom: 8, fontSize: 13, color: "#475569" }}>
+        Your {money(capital)} {mode === "spread" ? "covers" : mode === "covered" ? "funds" : "secures"} up to <b>{maxContracts} contract{maxContracts !== 1 ? "s" : ""}</b>. What {lossLabel} does at different sizes:
+      </div>
+      <table style={{ fontSize: 12, borderCollapse: "collapse", width: "100%", marginBottom: 8 }}>
+        <thead>
+          <tr>
+            <th style={{ textAlign: "left", color: "#64748b", fontWeight: 600, paddingBottom: 4 }}>Contracts</th>
+            <th style={{ textAlign: "right", color: "#64748b", fontWeight: 600, paddingBottom: 4 }}>Loss ({lossLabel})</th>
+            <th style={{ textAlign: "right", color: "#64748b", fontWeight: 600, paddingBottom: 4 }}>% of account</th>
+            <th />
+          </tr>
+        </thead>
+        <tbody>
+          {sizes.map((n) => {
+            const loss = lossAtSize(n);
+            const pct = capital > 0 ? Math.abs(loss / capital * 100) : 0;
+            const dangerous = pct > 50;
+            return (
+              <tr key={n} style={{ borderTop: "1px solid #f1f5f9" }}>
+                <td style={{ padding: "4px 0", fontWeight: n === maxContracts ? 700 : 400 }}>{n}</td>
+                <td style={{ textAlign: "right", color: loss < 0 ? "#e14c4c" : "#16a34a", fontWeight: 700 }}>
+                  {moneySigned(loss)}
+                </td>
+                <td style={{ textAlign: "right", color: dangerous ? "#e14c4c" : "#64748b" }}>
+                  {pct.toFixed(0)}%{dangerous ? " ⚠" : ""}
+                </td>
+                <td style={{ textAlign: "right" }}>
+                  {!atMax && n === maxContracts ? (
+                    <button type="button" onClick={() => onApply(n)} style={{ ...styles.sizingBtn, margin: 0 }}>Use</button>
+                  ) : contracts !== n ? (
+                    <button type="button" onClick={() => onApply(n)} style={{ ...styles.sizingBtn, margin: 0, background: "transparent", color: "#64748b", border: "1px solid #e2e8f0" }}>Use</button>
+                  ) : null}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      <div style={{ fontSize: 11.5, color: "#94a3b8" }}>
+        Size for the loss you can survive, not the premium you want to collect.
+      </div>
     </div>
   );
 }
@@ -1292,18 +1453,25 @@ function Scenarios({ cards }) {
     <section style={styles.scenarios}>
       {cards.map((c) => {
         const isLoss = c.pnl < 0;
+        const isWorst = c.isWorst;
         return (
           <div
             key={c.key}
             style={{
               ...styles.scenarioCard,
-              borderColor: isLoss ? "#f2d4d4" : "#d4ead9",
-              background: isLoss ? "#fdf6f6" : "#f6fbf8",
+              borderColor: isWorst ? "#e14c4c" : isLoss ? "#f2d4d4" : "#d4ead9",
+              borderWidth: isWorst ? 2 : 1,
+              background: isWorst ? "#fff5f5" : isLoss ? "#fdf6f6" : "#f6fbf8",
             }}
           >
+            {isWorst && (
+              <div style={{ fontSize: 10, fontWeight: 800, color: "#e14c4c", letterSpacing: "0.08em", marginBottom: 4 }}>
+                WORST CASE — SIZE FOR THIS
+              </div>
+            )}
             <div style={styles.scenarioTitle}>{c.title}</div>
             <div style={styles.scenarioSub}>{c.sub}</div>
-            <div style={{ ...styles.scenarioPnl, color: isLoss ? "#e14c4c" : "#3aa56b" }}>{moneySigned(c.pnl)}</div>
+            <div style={{ ...styles.scenarioPnl, color: isLoss ? "#e14c4c" : "#3aa56b", fontSize: isWorst ? 26 : undefined }}>{moneySigned(c.pnl)}</div>
             <div style={styles.scenarioNote}>{c.note}</div>
           </div>
         );
@@ -1635,12 +1803,12 @@ function Tour({ step, steps, onNext, onDone, onSkip }) {
   );
 }
 
-function Stat({ label, value, tone }) {
+function Stat({ label, value, tone, big }) {
   const color = tone === "good" ? "#16a34a" : tone === "bad" ? "#ef4444" : "#0f172a";
   return (
-    <div style={styles.stat}>
+    <div style={{ ...styles.stat, ...(big ? { borderLeft: "3px solid #ef4444", paddingLeft: 10 } : {}) }}>
       <div style={styles.statLabel}>{label}</div>
-      <div style={{ ...styles.statValue, color }}>{value}</div>
+      <div style={{ ...styles.statValue, color, fontSize: big ? 24 : undefined }}>{value}</div>
     </div>
   );
 }

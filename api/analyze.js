@@ -22,36 +22,41 @@ export default async function handler(req) {
     const yld = s.annYield != null ? `${s.annYield.toFixed(1)}% annualized yield` : "no live premium";
     const cush = s.cushion != null ? `${s.cushion.toFixed(1)}% cushion to breakeven` : "";
     const loss = s.badWeekPnl != null
-      ? `bad-week scenario loss ${s.badWeekPnl < 0 ? "-" : "+"}$${Math.abs(Math.round(s.badWeekPnl))}`
+      ? `adverse-move loss $${Math.abs(Math.round(s.badWeekPnl))}`
       : "";
-    const nums = [yld, cush, loss].filter(Boolean).join(", ");
-    return `- ${s.sym} (${s.name}): $${s.price.toFixed(2)} → $${s.strike.toFixed(2)} strike. ${nums}`;
+    const lossRatio = s.badWeekPnl != null && s.collateral > 0
+      ? `max-loss-to-collateral ${(Math.abs(s.badWeekPnl) / s.collateral * 100).toFixed(0)}%`
+      : "";
+    const nums = [yld, cush, loss, lossRatio].filter(Boolean).join(", ");
+    return `- ${s.sym} (${s.name}): $${s.price.toFixed(2)} → $${s.strike.toFixed(2)} strike. ${nums || "no premium data yet"}`;
   }).join("\n");
 
-  const prompt = `You are a blunt, plain-English options risk analyst helping a small retail trader with $${Math.round(capital)} decide which stocks are better or worse candidates for selling a ${stratLabel}.
+  const prompt = `You are a blunt, plain-English options risk analyst. A small retail trader with $${Math.round(capital)} is comparing these stocks for selling a ${stratLabel}.
 
-Here are the stocks they are comparing, with live option data:
+Here are the structured numbers for each stock — yield, cushion to breakeven, adverse-move loss, and max-loss-to-collateral ratio:
 ${lines}
 
-For each stock, give:
-1. A one-word verdict: FAVORABLE, CAUTION, or AVOID
-2. One sentence on WHY it is or isn't a good put-selling candidate (company stability, sector risk, typical volatility)
-3. One specific flag to watch (e.g. earnings risk, sector cyclicality, regulatory risk, low option liquidity)
+Your job: explain the TRADEOFF each stock's numbers represent. Do NOT simply rank stocks or pick winners. Surface the risk that the yield is hiding.
+
+For each stock:
+1. A one-word signal: FAVORABLE, CAUTION, or AVOID — based on whether the yield compensates for the cushion and max-loss ratio
+2. One sentence explaining the tradeoff: "Higher yield but thinner cushion — the premium is compensation for real tail risk" beats "this is a good stock"
+3. One specific flag: sector risk, earnings binary, thin option market, high beta vs. low cushion, etc.
 
 Rules:
-- Be honest — if the premium is too thin for the risk, say so
-- Do NOT make price predictions or say "it will go up/down"
-- Do NOT give investment advice — frame as "factors to consider"
-- Keep each entry under 60 words total
-- If you don't have enough information about a company, say so rather than guessing
-- Your training data has a cutoff — flag that recent events may change the picture
+- NEVER say a stock will go up or down
+- NEVER make investment recommendations — explain the tradeoff in the numbers
+- If yield is high but cushion is thin, flag it explicitly
+- If max-loss-to-collateral is >30%, call it out
+- Keep each entry under 70 words
+- Your training cutoff means recent events may change the picture — say so in the caveat
 
-Return ONLY valid JSON in this exact shape, no prose outside it:
+Return ONLY valid JSON, no prose outside it:
 {
   "verdicts": [
     { "sym": "AAPL", "verdict": "FAVORABLE", "reason": "...", "flag": "..." }
   ],
-  "caveat": "one sentence about limitations of this analysis"
+  "caveat": "one sentence about what these numbers can and can't tell you"
 }`;
 
   try {
