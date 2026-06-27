@@ -1,4 +1,7 @@
 import React, { useMemo, useState, useEffect, useRef } from "react";
+import { normCdf, lnDensity, bsGreeks, solveIv, realizedVol as calcRealizedVol } from "./lib/blackScholes.js";
+import { popFromDelta, expectedMove, cushionSigma, popPlain, cushionPlain } from "./lib/probability.js";
+import { richnessSignal } from "./lib/richness.js";
 
 const STORAGE_KEY = "csp_visualizer_inputs_v1";
 const JOURNAL_KEY = "csp_journal_v1";
@@ -321,6 +324,8 @@ export default function App() {
   const [tourStep, setTourStep] = useState(() => {
     try { return localStorage.getItem(TOUR_KEY) ? null : 0; } catch { return 0; }
   });
+  const [rvol, setRvol] = useState(null);      // realized vol from 30d price history
+  const [delta, setDelta] = useState(null);    // from Alpaca option snapshot
   const appliedRef = useRef(null);
 
   function dismissTour() {
@@ -357,6 +362,7 @@ export default function App() {
         if (d && d.available === false) return setPremQuote({ status: "nokey" });
         if (!d || !Number.isFinite(d.premium)) return Promise.reject();
         setInputs((s) => ({ ...s, premium: round2(d.premium), iv: d.iv ?? null }));
+        setDelta(Number.isFinite(d.delta) ? d.delta : null);
         setPremQuote({ status: "live", ...d });
       })
       .catch(() => setPremQuote({ status: "error" }));
@@ -364,6 +370,8 @@ export default function App() {
 
   function selectCompany(sym) {
     setTicker(sym);
+    setRvol(null);
+    setDelta(null);
     if (!sym) return setQuote({ status: "idle" });
     const c = COMPANIES.find((x) => x.ticker === sym);
     if (!c) return;
@@ -385,6 +393,16 @@ export default function App() {
         setQuote({ status: "live", price: d.price, date: d.date, source: "live" });
       })
       .catch(() => setQuote({ status: "snapshot", price: c.price, source: "snapshot" }));
+
+    // Fetch 30-day price history for realized vol (cached 1 hour)
+    fetch(`/api/history?symbol=${encodeURIComponent(sym)}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (d?.available && d.closes?.length >= 3) {
+          setRvol(calcRealizedVol(d.closes, 30));
+        }
+      })
+      .catch(() => {});
   }
 
   const mode = inputs.mode;
@@ -414,6 +432,35 @@ export default function App() {
       ? spreadWidth * 100
       : putStrike * 100 + (mode === "covered" ? spot * 100 : 0);
   const maxContracts = perContractCash > 0 ? Math.floor(capital / perContractCash) : 0;
+
+  // Richness: market IV vs realized vol
+  const richness = useMemo(() => {
+    if (!(iv > 0) || !(rvol > 0)) return null;
+    return richnessSignal(iv, rvol);
+  }, [iv, rvol]);
+
+  // Probability of profit + cushion (market-implied, via delta or BS fallback)
+  const popInfo = useMemo(() => {
+    if (!(putStrike > 0) || !(putPrem > 0)) return null;
+    let shortPutDelta = delta; // from Alpaca snapshot
+    // BS fallback if Alpaca didn't return delta but we have IV
+    if (shortPutDelta == null && iv > 0 && dte > 0 && spot > 0) {
+      shortPutDelta = bsGreeks(spot, putStrike, dte, 0.05, iv, "put").delta;
+    }
+    const legs = { shortPutDelta, putDelta: shortPutDelta, callDelta: delta != null ? Math.abs(delta) : 0 };
+    const pop = popFromDelta(mode === "covered" ? "covered" : mode === "strangle" ? "strangle" : "put", legs);
+    const popNum = typeof pop === "object" ? pop.keepPremium : pop;
+    const expMove = expectedMove(spot, iv || 0, dte);
+    const cSigma = cushionSigma(spot, putStrike, expMove);
+    return {
+      pop: popNum,
+      popText: popPlain(popNum),
+      cushion: cSigma,
+      cushionText: cushionPlain(cSigma),
+      expMove,
+      deltaSource: delta != null ? "market" : iv > 0 ? "calculated" : null,
+    };
+  }, [mode, putStrike, putPrem, delta, iv, dte, spot]);
 
   const p = { mode, putStrike, putPrem, longStrike, longPrem, callStrike, callPrem, spot, shares, iv, dte, ticker };
 
@@ -620,6 +667,20 @@ export default function App() {
           </div>
         )}
 
+        {(popInfo || richness) && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, margin: "12px 0 4px" }}>
+            {popInfo?.popText && (
+              <InsightCard icon="🎯" label="Your odds" text={popInfo.popText} note={popInfo.deltaSource === "calculated" ? "Calculated from current IV — pull a live premium for the market's own figure." : null} />
+            )}
+            {popInfo?.cushionText && (
+              <InsightCard icon="🛡️" label="Your buffer" text={popInfo.cushionText} />
+            )}
+            {richness && (
+              <InsightCard icon={richness.emoji} label="Good time to sell?" text={richness.headline} detail={richness.detail} tag={richness.tag} />
+            )}
+          </div>
+        )}
+
         <Ticket
           mode={mode}
           ticker={ticker}
@@ -669,25 +730,6 @@ export default function App() {
 }
 
 // ---------- model builder: one place, all modes ----------
-// Standard normal CDF (Abramowitz & Stegun approximation)
-function normCdf(z) {
-  const a = [0.3193815, -0.3565638, 1.7814779, -1.8212560, 1.3302744];
-  const t = 1 / (1 + 0.2316419 * Math.abs(z));
-  let poly = 0;
-  for (let i = a.length - 1; i >= 0; i--) poly = poly * t + a[i];
-  const d = 0.3989423 * Math.exp(-0.5 * z * z) * t * poly;
-  return z >= 0 ? 1 - d : d;
-}
-
-// Lognormal PDF for stock price S given current price S0, IV, and time T (in years)
-function lnDensity(S, S0, iv, T) {
-  if (S <= 0 || S0 <= 0 || !(iv > 0) || !(T > 0)) return 0;
-  const sigmaLn = iv * Math.sqrt(T);
-  const muLn = Math.log(S0) - 0.5 * sigmaLn * sigmaLn;
-  const z = (Math.log(S) - muLn) / sigmaLn;
-  return Math.exp(-0.5 * z * z) / (S * sigmaLn * Math.sqrt(2 * Math.PI));
-}
-
 function buildModel(p, dropPct) {
   const { mode, putStrike, longStrike, callStrike, spot, shares, iv, dte } = p;
 
@@ -1444,6 +1486,29 @@ function JournalRow({ e, onClose, onDelete }) {
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+function InsightCard({ icon, label, text, detail, note, tag }) {
+  const [open, setOpen] = useState(false);
+  const borderColor = tag === "rich" ? "#16a34a" : tag === "cheap" ? "#e14c4c" : tag === "fair" ? "#d97706" : "#e2e8f0";
+  return (
+    <div style={{ border: `1px solid ${borderColor}`, borderRadius: 8, padding: "10px 14px", background: "#fff", fontSize: 13, lineHeight: 1.5 }}>
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+        <span style={{ fontSize: 16, flexShrink: 0 }}>{icon}</span>
+        <div style={{ flex: 1 }}>
+          <span style={{ fontWeight: 700, color: "#64748b", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.05em" }}>{label}</span>
+          <div style={{ color: "#0f172a", fontWeight: 600, marginTop: 1 }}>{text}</div>
+          {note && <div style={{ color: "#94a3b8", fontSize: 11.5, marginTop: 3 }}>{note}</div>}
+          {detail && (
+            <button type="button" onClick={() => setOpen(o => !o)} style={{ background: "none", border: "none", color: "#64748b", fontSize: 11.5, cursor: "pointer", padding: "3px 0 0", textDecoration: "underline" }}>
+              {open ? "Less" : "Why?"}
+            </button>
+          )}
+          {open && detail && <div style={{ color: "#475569", fontSize: 12.5, marginTop: 4, lineHeight: 1.6 }}>{detail}</div>}
+        </div>
+      </div>
     </div>
   );
 }

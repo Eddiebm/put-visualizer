@@ -57,6 +57,7 @@ export default async function handler(req) {
     }
 
     const iv = best.snap?.impliedVolatility ?? best.snap?.greeks?.impliedVolatility ?? null;
+    const delta = best.snap?.greeks?.delta ?? null;
 
     return json(
       {
@@ -70,6 +71,7 @@ export default async function handler(req) {
         bid: Number.isFinite(bid) ? bid : null,
         ask: Number.isFinite(ask) ? ask : null,
         iv: Number.isFinite(iv) && iv > 0 ? iv : null,
+        delta: Number.isFinite(delta) ? delta : null,
         source: "alpaca",
       },
       200,
