@@ -631,6 +631,7 @@ export default function App() {
           expiration={expiration}
           dropPct={dropPct}
           capital={capital}
+          mode={mode}
           onLoad={(sym, strike, prem) => {
             setTicker(sym);
             setInputs((s) => ({ ...s, strike, premium: prem, spot: strike }));
@@ -1311,7 +1312,7 @@ function Scenarios({ cards }) {
   );
 }
 
-function Screener({ expiration, dropPct, capital, onLoad }) {
+function Screener({ expiration, dropPct, capital, mode, onLoad }) {
   const [selected, setSelected] = useState([]);
   const [exp, setExp] = useState(expiration);
   const [rows, setRows] = useState([]);
@@ -1319,6 +1320,9 @@ function Screener({ expiration, dropPct, capital, onLoad }) {
   const [sortKey, setSortKey] = useState("yield");
   const [sortDir, setSortDir] = useState("desc");
   const [hasPremiums, setHasPremiums] = useState(false);
+  const [aiStatus, setAiStatus] = useState("idle"); // idle | loading | done | unavailable
+  const [aiVerdicts, setAiVerdicts] = useState({});
+  const [aiCaveat, setAiCaveat] = useState("");
 
   function toggleTicker(t) {
     setSelected((s) =>
@@ -1373,6 +1377,30 @@ function Screener({ expiration, dropPct, capital, onLoad }) {
     setHasPremiums(results.some((r) => r.premium != null));
     setRows(results);
     setLoading(false);
+    setAiStatus("idle");
+    setAiVerdicts({});
+  }
+
+  async function runAiAnalysis(currentRows) {
+    const stocksToAnalyze = currentRows.length ? currentRows : rows;
+    if (!stocksToAnalyze.length) return;
+    setAiStatus("loading");
+    try {
+      const r = await fetch("/api/analyze", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ stocks: stocksToAnalyze, capital, mode }),
+      });
+      const d = await r.json();
+      if (!d.available) { setAiStatus("unavailable"); return; }
+      const map = {};
+      (d.verdicts || []).forEach((v) => { map[v.sym] = v; });
+      setAiVerdicts(map);
+      setAiCaveat(d.caveat || "");
+      setAiStatus("done");
+    } catch {
+      setAiStatus("error");
+    }
   }
 
   function toggleSort(key) {
@@ -1454,6 +1482,25 @@ function Screener({ expiration, dropPct, capital, onLoad }) {
               No live premiums — add an Alpaca key to fetch real option prices. Yield and cushion columns need premiums to fill.
             </div>
           )}
+          <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 14, flexWrap: "wrap" }}>
+            <button
+              type="button"
+              onClick={() => runAiAnalysis(rows)}
+              disabled={aiStatus === "loading"}
+              style={{ ...styles.tourNext, fontSize: 12, padding: "8px 18px", opacity: aiStatus === "loading" ? 0.6 : 1 }}
+            >
+              {aiStatus === "loading" ? "Asking AI…" : aiStatus === "done" ? "Refresh AI picks" : "Ask AI: winner or loser?"}
+            </button>
+            {aiStatus === "unavailable" && (
+              <span style={{ fontSize: 12, color: "#94a3b8" }}>Add ANTHROPIC_API_KEY to Vercel to enable AI analysis.</span>
+            )}
+            {aiStatus === "error" && (
+              <span style={{ fontSize: 12, color: "#e14c4c" }}>AI analysis failed — try again.</span>
+            )}
+            {aiStatus === "done" && aiCaveat && (
+              <span style={{ fontSize: 11.5, color: "#94a3b8", fontStyle: "italic" }}>{aiCaveat}</span>
+            )}
+          </div>
           <div style={{ overflowX: "auto", marginBottom: 10 }}>
             <table style={styles.screenerTable}>
               <thead>
@@ -1477,11 +1524,24 @@ function Screener({ expiration, dropPct, capital, onLoad }) {
               <tbody>
                 {sorted.map((row, i) => {
                   const badLoss = row.badWeekPnl != null && row.badWeekPnl < 0;
+                  const ai = aiVerdicts[row.sym];
+                  const verdictColor =
+                    ai?.verdict === "FAVORABLE" ? "#16a34a"
+                    : ai?.verdict === "AVOID" ? "#e14c4c"
+                    : ai?.verdict === "CAUTION" ? "#d97706"
+                    : "#94a3b8";
                   return (
                     <tr key={row.sym} style={{ background: i % 2 === 0 ? "#fff" : "#f8fafc" }}>
                       <td style={styles.screenerTd}>
                         <div style={{ fontWeight: 700, fontSize: 13 }}>{row.sym}</div>
                         <div style={{ fontSize: 11, color: "#94a3b8" }}>{row.name}</div>
+                        {ai && (
+                          <div style={{ marginTop: 4 }}>
+                            <span style={{ fontSize: 10, fontWeight: 800, color: verdictColor, letterSpacing: "0.05em" }}>
+                              {ai.verdict}
+                            </span>
+                          </div>
+                        )}
                       </td>
                       <td style={styles.screenerTd}>
                         {money2(row.price)}
@@ -1501,15 +1561,21 @@ function Screener({ expiration, dropPct, capital, onLoad }) {
                         {row.badWeekPnl != null ? (row.badWeekPnl >= 0 ? "+" : "−") + "$" + Math.abs(Math.round(row.badWeekPnl)).toLocaleString() : "—"}
                       </td>
                       <td style={styles.screenerTd}>{row.maxContracts}</td>
-                      <td style={styles.screenerTd}>
+                      <td style={{ ...styles.screenerTd, maxWidth: 220 }}>
                         {row.premium != null && (
                           <button
                             type="button"
                             onClick={() => onLoad(row.sym, row.strike, row.premium)}
-                            style={styles.loadBtn}
+                            style={{ ...styles.loadBtn, marginBottom: ai ? 6 : 0 }}
                           >
                             Load ↑
                           </button>
+                        )}
+                        {ai && (
+                          <div style={{ fontSize: 11, color: "#475569", lineHeight: 1.45, whiteSpace: "normal" }}>
+                            {ai.reason}
+                            {ai.flag && <div style={{ color: "#d97706", marginTop: 3 }}>⚠ {ai.flag}</div>}
+                          </div>
                         )}
                       </td>
                     </tr>
