@@ -1,30 +1,31 @@
 import React, { useMemo, useState, useEffect, useRef } from "react";
 
 const STORAGE_KEY = "csp_visualizer_inputs_v1";
+const JOURNAL_KEY = "csp_journal_v1";
 
 // Bundled snapshot prices — used instantly on selection and as the offline
 // fallback when the live /api/quote endpoint is unreachable. Editable; the UI
 // labels these clearly as approximate so they're never mistaken for live data.
-const SNAPSHOT_DATE = "Jun 2026";
+const SNAPSHOT_DATE = "Jun 27, 2026";
 const COMPANIES = [
-  { ticker: "AAPL", name: "Apple", price: 214 },
-  { ticker: "MSFT", name: "Microsoft", price: 462 },
-  { ticker: "NVDA", name: "NVIDIA", price: 131 },
-  { ticker: "AMZN", name: "Amazon", price: 201 },
-  { ticker: "GOOGL", name: "Alphabet", price: 178 },
-  { ticker: "META", name: "Meta", price: 503 },
-  { ticker: "TSLA", name: "Tesla", price: 248 },
-  { ticker: "AMD", name: "AMD", price: 162 },
-  { ticker: "INTC", name: "Intel", price: 31 },
-  { ticker: "JPM", name: "JPMorgan", price: 205 },
-  { ticker: "BAC", name: "Bank of America", price: 40 },
-  { ticker: "DIS", name: "Disney", price: 101 },
-  { ticker: "KO", name: "Coca-Cola", price: 63 },
-  { ticker: "PFE", name: "Pfizer", price: 28 },
-  { ticker: "F", name: "Ford", price: 12 },
-  { ticker: "PLTR", name: "Palantir", price: 25 },
-  { ticker: "SOFI", name: "SoFi", price: 7 },
-  { ticker: "T", name: "AT&T", price: 19 },
+  { ticker: "AAPL", name: "Apple", price: 284 },
+  { ticker: "MSFT", name: "Microsoft", price: 373 },
+  { ticker: "NVDA", name: "NVIDIA", price: 193 },
+  { ticker: "AMZN", name: "Amazon", price: 233 },
+  { ticker: "GOOGL", name: "Alphabet", price: 337 },
+  { ticker: "META", name: "Meta", price: 550 },
+  { ticker: "TSLA", name: "Tesla", price: 380 },
+  { ticker: "AMD", name: "AMD", price: 522 },
+  { ticker: "INTC", name: "Intel", price: 128 },
+  { ticker: "JPM", name: "JPMorgan", price: 329 },
+  { ticker: "BAC", name: "Bank of America", price: 58 },
+  { ticker: "DIS", name: "Disney", price: 99 },
+  { ticker: "KO", name: "Coca-Cola", price: 83 },
+  { ticker: "PFE", name: "Pfizer", price: 24 },
+  { ticker: "F", name: "Ford", price: 14 },
+  { ticker: "PLTR", name: "Palantir", price: 113 },
+  { ticker: "SOFI", name: "SoFi", price: 18 },
+  { ticker: "T", name: "AT&T", price: 23 },
 ];
 
 const MODES = [
@@ -74,6 +75,19 @@ function loadInputs() {
   }
 }
 
+function loadJournal() {
+  try {
+    const raw = localStorage.getItem(JOURNAL_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function today() {
+  return new Date().toISOString().slice(0, 10);
+}
+
 const money = (n) =>
   n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 
@@ -107,6 +121,7 @@ export default function App() {
   const [quote, setQuote] = useState({ status: "idle" });
   const [expiration, setExpiration] = useState(defaultExpiration);
   const [premQuote, setPremQuote] = useState({ status: "idle" });
+  const [journal, setJournal] = useState(loadJournal);
   const appliedRef = useRef(null);
 
   useEffect(() => {
@@ -116,6 +131,14 @@ export default function App() {
       /* ignore quota / private-mode errors */
     }
   }, [inputs]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(JOURNAL_KEY, JSON.stringify(journal));
+    } catch {
+      /* ignore quota / private-mode errors */
+    }
+  }, [journal]);
 
   function fetchPremium() {
     if (!ticker) return;
@@ -189,6 +212,49 @@ export default function App() {
     shares,
     dropPct,
   ]);
+
+  function logTrade() {
+    if (shares <= 0) return;
+    const entry = {
+      id: `${Date.now()}-${Math.round(Math.random() * 1e6)}`,
+      openedAt: today(),
+      mode,
+      ticker: ticker || "—",
+      expiration,
+      putStrike,
+      putPrem,
+      callStrike,
+      callPrem,
+      spot,
+      contracts,
+      credit: model.credit,
+      status: "open",
+    };
+    setJournal((j) => [entry, ...j]);
+  }
+
+  function closeTrade(id, closePrice) {
+    const px = num(closePrice);
+    setJournal((j) =>
+      j.map((e) => {
+        if (e.id !== id) return e;
+        const realizedPnl = stratPnl(px, {
+          mode: e.mode,
+          putStrike: e.putStrike,
+          putPrem: e.putPrem,
+          callStrike: e.callStrike,
+          callPrem: e.callPrem,
+          spot: e.spot,
+          shares: e.contracts * 100,
+        });
+        return { ...e, status: "closed", closePrice: px, closedAt: today(), realizedPnl };
+      })
+    );
+  }
+
+  function deleteTrade(id) {
+    setJournal((j) => j.filter((e) => e.id !== id));
+  }
 
   return (
     <div style={styles.page}>
@@ -315,6 +381,8 @@ export default function App() {
           <Stat label={model.breakevens.length > 1 ? "Breakevens" : "Breakeven"} value={model.breakevenLabel} tone="neutral" />
           <Stat label={model.worstLabel} value={model.worstValue} tone="bad" />
         </section>
+
+        <Journal journal={journal} onLog={logTrade} onClose={closeTrade} onDelete={deleteTrade} />
 
         <footer style={styles.footer}>
           Inputs are saved on this device — close it and your last setup is still here. Not advice;
@@ -789,6 +857,118 @@ function Ticket({ mode, ticker, expiration, putStrike, putPrem, callStrike, call
   );
 }
 
+function legLabel(e) {
+  if (e.mode === "put") return `${money2(e.putStrike)}P`;
+  return `${money2(e.putStrike)}P / ${money2(e.callStrike)}C`;
+}
+
+function Journal({ journal, onLog, onClose, onDelete }) {
+  const closed = journal.filter((e) => e.status === "closed");
+  const wins = closed.filter((e) => e.realizedPnl >= 0);
+  const losses = closed.filter((e) => e.realizedPnl < 0);
+  const realized = closed.reduce((s, e) => s + e.realizedPnl, 0);
+  const winSum = wins.reduce((s, e) => s + e.realizedPnl, 0);
+  const lossSum = losses.reduce((s, e) => s + e.realizedPnl, 0); // negative
+  const worst = losses.reduce((m, e) => Math.min(m, e.realizedPnl), 0);
+
+  return (
+    <section style={styles.journal}>
+      <div style={styles.journalHead}>
+        <span style={styles.ticketTitle}>Paper-trade journal</span>
+        <button type="button" onClick={onLog} style={styles.premiumBtn}>
+          + Log current trade
+        </button>
+      </div>
+
+      {journal.length === 0 ? (
+        <p style={styles.journalEmpty}>
+          No trades logged yet. Set up a trade above and hit “Log current trade” — then come back and
+          record how it actually closed, wins <i>and</i> losses.
+        </p>
+      ) : (
+        <>
+          {closed.length > 0 && (
+            <div style={styles.journalSummary}>
+              <Stat label="Realized P&L" value={moneySigned(realized)} tone={realized < 0 ? "bad" : "good"} />
+              <Stat label={`Wins (${wins.length})`} value={moneySigned(winSum)} tone="good" />
+              <Stat label={`Losses (${losses.length})`} value={moneySigned(lossSum)} tone="bad" />
+              <Stat label="Worst single loss" value={losses.length ? money(worst) : "—"} tone="bad" />
+            </div>
+          )}
+
+          <div style={styles.journalList}>
+            {journal.map((e) => (
+              <JournalRow key={e.id} e={e} onClose={onClose} onDelete={onDelete} />
+            ))}
+          </div>
+
+          {closed.length > 0 && losses.length === 0 && (
+            <p style={styles.journalNote}>
+              No losing trades recorded yet — keep logging the bad weeks too. An honest record needs
+              them.
+            </p>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
+function JournalRow({ e, onClose, onDelete }) {
+  const [px, setPx] = useState("");
+  const open = e.status === "open";
+  const loss = e.status === "closed" && e.realizedPnl < 0;
+
+  return (
+    <div style={styles.journalRow}>
+      <div style={{ minWidth: 0, flex: "1 1 200px" }}>
+        <div style={styles.journalSym}>
+          {e.ticker} · {e.mode} · {legLabel(e)} ×{e.contracts}
+        </div>
+        <div style={styles.journalMeta}>
+          opened {e.openedAt} · exp {e.expiration} · collected {money(e.credit)}
+          {e.status === "closed" && ` · closed ${e.closedAt} @ ${money2(e.closePrice)}`}
+        </div>
+      </div>
+
+      {open ? (
+        <div style={styles.journalActions}>
+          <span style={{ ...styles.inputWrap, width: 130 }}>
+            <span style={styles.affix}>close $</span>
+            <input
+              type="number"
+              inputMode="decimal"
+              value={px}
+              placeholder="price"
+              onChange={(ev) => setPx(ev.target.value)}
+              style={styles.input}
+            />
+          </span>
+          <button
+            type="button"
+            onClick={() => px !== "" && onClose(e.id, px)}
+            style={styles.sizingBtn}
+          >
+            Close
+          </button>
+          <button type="button" onClick={() => onDelete(e.id)} style={styles.deleteBtn} aria-label="delete">
+            ✕
+          </button>
+        </div>
+      ) : (
+        <div style={styles.journalActions}>
+          <span style={{ ...styles.journalPnl, color: loss ? "#e14c4c" : "#3aa56b" }}>
+            {moneySigned(e.realizedPnl)}
+          </span>
+          <button type="button" onClick={() => onDelete(e.id)} style={styles.deleteBtn} aria-label="delete">
+            ✕
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Scenarios({ cards }) {
   return (
     <section style={styles.scenarios}>
@@ -890,4 +1070,16 @@ const styles = {
   statLabel: { fontSize: 12, color: "#64748b", marginBottom: 4 },
   statValue: { fontSize: 18, fontWeight: 700, letterSpacing: "-0.01em" },
   footer: { marginTop: 20, fontSize: 12.5, color: "#94a3b8", textAlign: "center", lineHeight: 1.5 },
+  journal: { marginTop: 28, paddingTop: 22, borderTop: "1px solid #eef2f7" },
+  journalHead: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 14, flexWrap: "wrap" },
+  journalEmpty: { fontSize: 13, color: "#64748b", lineHeight: 1.55, margin: 0 },
+  journalSummary: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12, marginBottom: 16 },
+  journalList: { display: "flex", flexDirection: "column", gap: 8 },
+  journalRow: { display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 10, border: "1px solid #eef2f7", borderRadius: 10, padding: "10px 12px", background: "#fcfcfd" },
+  journalSym: { fontSize: 13, fontWeight: 600, color: "#1f2937", textTransform: "capitalize" },
+  journalMeta: { fontSize: 11.5, color: "#94a3b8", marginTop: 2 },
+  journalActions: { display: "flex", alignItems: "center", gap: 8 },
+  journalPnl: { fontSize: 16, fontWeight: 700, letterSpacing: "-0.01em" },
+  journalNote: { fontSize: 12, color: "#cf9a3a", marginTop: 12, lineHeight: 1.5 },
+  deleteBtn: { border: "none", background: "transparent", color: "#cbd5e1", fontSize: 14, cursor: "pointer", padding: "4px 6px", lineHeight: 1 },
 };
