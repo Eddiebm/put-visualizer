@@ -220,6 +220,7 @@ const COMPANIES = [
 
 const MODES = [
   { key: "put", label: "Cash-secured put" },
+  { key: "spread", label: "Put credit spread" },
   { key: "strangle", label: "Short strangle" },
   { key: "covered", label: "Covered strangle" },
 ];
@@ -244,14 +245,16 @@ function defaultExpiration() {
 
 const DEFAULTS = {
   mode: "put",
-  strike: 50, // put strike
-  premium: 1.5, // put premium
+  strike: 50,
+  premium: 1.5,
+  longStrike: 45,
+  longPremium: 0.5,
   callStrike: 60,
   callPremium: 1.2,
-  spot: 55, // share cost basis (covered mode)
+  spot: 55,
   contracts: 2,
   dropPct: 20,
-  capital: 25000,
+  capital: 500,
 };
 
 function loadInputs() {
@@ -294,12 +297,14 @@ function formatExp(iso) {
 }
 
 // --- core strategy P&L at expiration, per share, × shares ---
-// put:      short put only
-// strangle: short put + short call, no stock (naked call → unbounded upside loss)
-// covered:  long stock @ spot + short call (covered) + short put (cash-secured)
 function stratPnl(S, p) {
   const putLeg = p.putPrem - Math.max(0, p.putStrike - S);
   if (p.mode === "put") return putLeg * p.shares;
+  if (p.mode === "spread") {
+    // sell short put, buy long put below it — loss is capped at spread width
+    const longLeg = -p.longPrem + Math.max(0, p.longStrike - S);
+    return (putLeg + longLeg) * p.shares;
+  }
   const callLeg = p.callPrem - Math.max(0, S - p.callStrike);
   if (p.mode === "strangle") return (putLeg + callLeg) * p.shares;
   return (S - p.spot + putLeg + callLeg) * p.shares; // covered
@@ -382,9 +387,11 @@ export default function App() {
   }
 
   const mode = inputs.mode;
-  const twoSided = mode !== "put";
+  const twoSided = mode === "strangle" || mode === "covered";
   const putStrike = num(inputs.strike);
   const putPrem = num(inputs.premium);
+  const longStrike = num(inputs.longStrike);
+  const longPrem = num(inputs.longPremium);
   const callStrike = num(inputs.callStrike);
   const callPrem = num(inputs.callPremium);
   const spot = num(inputs.spot);
@@ -393,17 +400,21 @@ export default function App() {
   const capital = num(inputs.capital);
   const shares = contracts * 100;
 
-  // collateral: put always cash-secured; covered also buys the stock
+  const spreadWidth = Math.max(0, putStrike - longStrike);
   const perContractCash =
-    putStrike * 100 + (mode === "covered" ? spot * 100 : 0);
+    mode === "spread"
+      ? spreadWidth * 100
+      : putStrike * 100 + (mode === "covered" ? spot * 100 : 0);
   const maxContracts = perContractCash > 0 ? Math.floor(capital / perContractCash) : 0;
 
-  const p = { mode, putStrike, putPrem, callStrike, callPrem, spot, shares };
+  const p = { mode, putStrike, putPrem, longStrike, longPrem, callStrike, callPrem, spot, shares };
 
   const model = useMemo(() => buildModel(p, dropPct), [
     mode,
     putStrike,
     putPrem,
+    longStrike,
+    longPrem,
     callStrike,
     callPrem,
     spot,
@@ -477,6 +488,8 @@ export default function App() {
           <p style={styles.sub}>
             {mode === "put" &&
               "The flat green ceiling is everything you can win. The red underneath is what a bad week costs. That gap is the whole story."}
+            {mode === "spread" &&
+              "Sell a put, buy a cheaper put below it. Your loss is capped at the spread width — so $500 can trade any stock. You collect less premium, but you know exactly the worst case before you enter."}
             {mode === "strangle" &&
               "Sell a put and a call, collect both premiums — a flat top between the strikes, with losses on both wings. The upside wing never stops."}
             {mode === "covered" &&
@@ -498,18 +511,34 @@ export default function App() {
 
         <section style={styles.controls}>
           <Field
-            label={twoSided ? "Put strike" : "Strike price"}
+            label={mode === "spread" ? "Short put (sell)" : twoSided ? "Put strike" : "Strike price"}
             prefix="$"
             value={inputs.strike}
             onChange={(v) => setInputs((s) => ({ ...s, strike: v }))}
           />
           <Field
-            label="Put premium"
+            label={mode === "spread" ? "Short premium (collect)" : "Put premium"}
             prefix="$"
             value={inputs.premium}
             onChange={(v) => setInputs((s) => ({ ...s, premium: v }))}
           />
-          {twoSided && (
+          {mode === "spread" && (
+            <>
+              <Field
+                label="Long put (buy)"
+                prefix="$"
+                value={inputs.longStrike}
+                onChange={(v) => setInputs((s) => ({ ...s, longStrike: v }))}
+              />
+              <Field
+                label="Long premium (pay)"
+                prefix="$"
+                value={inputs.longPremium}
+                onChange={(v) => setInputs((s) => ({ ...s, longPremium: v }))}
+              />
+            </>
+          )}
+          {twoSided && mode !== "spread" && (
             <>
               <Field
                 label="Call strike"
@@ -581,6 +610,8 @@ export default function App() {
           expiration={expiration}
           putStrike={putStrike}
           putPrem={putPrem}
+          longStrike={longStrike}
+          longPrem={longPrem}
           callStrike={callStrike}
           callPrem={callPrem}
           contracts={contracts}
@@ -619,75 +650,115 @@ export default function App() {
 
 // ---------- model builder: one place, all modes ----------
 function buildModel(p, dropPct) {
-  const { mode, putStrike, callStrike, spot, shares } = p;
+  const { mode, putStrike, longStrike, callStrike, spot, shares } = p;
+
   const credit =
-    (mode === "put" ? p.putPrem : p.putPrem + p.callPrem) * shares;
+    mode === "spread"
+      ? (p.putPrem - p.longPrem) * shares
+      : mode === "put"
+      ? p.putPrem * shares
+      : (p.putPrem + p.callPrem) * shares;
 
   const collateral =
-    putStrike * 100 * (shares / 100) + (mode === "covered" ? spot * 100 * (shares / 100) : 0);
+    mode === "spread"
+      ? Math.max(0, putStrike - longStrike) * shares
+      : putStrike * 100 * (shares / 100) + (mode === "covered" ? spot * 100 * (shares / 100) : 0);
 
-  // max gain (flat ceiling)
   let maxGain;
   if (mode === "put") maxGain = p.putPrem * shares;
+  else if (mode === "spread") maxGain = (p.putPrem - p.longPrem) * shares;
   else if (mode === "strangle") maxGain = (p.putPrem + p.callPrem) * shares;
   else maxGain = (callStrike - spot + p.putPrem + p.callPrem) * shares;
 
-  // scenario reference prices
   const move = dropPct / 100;
-  const highAnchor = mode === "put" ? putStrike : callStrike;
-  const center = mode === "put" ? putStrike : mode === "covered" ? spot : (putStrike + callStrike) / 2;
-  const downPrice = putStrike * (1 - move);
-  const upPrice = highAnchor * (1 + move);
+  const moveLbl = trimNum(dropPct);
+
+  // scenario prices
+  const downPrice = mode === "spread" ? longStrike * (1 - move) : putStrike * (1 - move);
+  const upPrice = (mode === "put" || mode === "spread" ? putStrike : callStrike) * (1 + move);
+  const flatPrice =
+    mode === "covered" ? spot
+    : mode === "strangle" ? (putStrike + callStrike) / 2
+    : putStrike;
 
   const downPnl = stratPnl(downPrice, p);
-  const flatPnl = stratPnl(center, p);
+  const flatPnl = stratPnl(flatPrice, p);
   const upPnl = stratPnl(upPrice, p);
+  const midPnl = mode === "spread" ? stratPnl((putStrike + longStrike) / 2, p) : null;
 
-  const moveLbl = trimNum(dropPct);
-  const scenarios = [
-    {
-      key: "down",
-      title: "If it goes down",
-      sub: `−${moveLbl}% → ${money2(downPrice)}`,
-      pnl: downPnl,
-      note:
-        mode === "covered"
-          ? "You lose on the shares AND get assigned on the put — double the downside."
-          : "Assigned below breakeven. The loss has real room to run — the side the videos skip.",
-    },
-    {
-      key: "flat",
-      title: "If it stays flat",
-      sub: mode === "put" ? "unchanged" : mode === "covered" ? `at ${money2(spot)}` : "between strikes",
-      pnl: flatPnl,
-      note:
-        mode === "put"
-          ? "Put expires worthless — you keep the full premium."
-          : "Both options expire worthless — you keep both premiums. The sweet spot.",
-    },
-    {
-      key: "up",
-      title: "If it goes up",
-      sub: `+${moveLbl}% → ${money2(upPrice)}`,
-      pnl: upPnl,
-      note:
-        mode === "put"
-          ? "Put expires worthless — you keep the premium, and only the premium, however high it climbs."
-          : mode === "strangle"
-          ? "The naked call bites. This loss keeps growing the higher it goes — no ceiling."
-          : "Shares called away at the call strike. Gains are capped here — you don't lose, but you give up the upside.",
-    },
-  ];
+  const scenarios =
+    mode === "spread"
+      ? [
+          {
+            key: "down",
+            title: "Falls below long strike",
+            sub: `below ${money2(longStrike)} · max loss`,
+            pnl: stratPnl(longStrike * 0.97, p),
+            note: `Both puts are deep in the money. Your long put offsets the short put exactly — loss is capped here. You can't lose more than ${money2(Math.max(0, putStrike - longStrike) - (p.putPrem - p.longPrem))} per share no matter how far it falls.`,
+          },
+          {
+            key: "flat",
+            title: "Stays above short strike",
+            sub: `above ${money2(putStrike)} · max profit`,
+            pnl: flatPnl,
+            note: "Both puts expire worthless. You keep the full net credit — this is the best case.",
+          },
+          {
+            key: "between",
+            title: "Lands between the strikes",
+            sub: `between ${money2(longStrike)} and ${money2(putStrike)}`,
+            pnl: midPnl,
+            note: "The short put is in the money but the long put isn't fully offsetting yet. Partial loss — worse than the flat case, better than max loss.",
+          },
+        ]
+      : [
+          {
+            key: "down",
+            title: "If it goes down",
+            sub: `−${moveLbl}% → ${money2(downPrice)}`,
+            pnl: downPnl,
+            note:
+              mode === "covered"
+                ? "You lose on the shares AND get assigned on the put — double the downside."
+                : "Assigned below breakeven. The loss has real room to run — the side the videos skip.",
+          },
+          {
+            key: "flat",
+            title: "If it stays flat",
+            sub: mode === "put" ? "unchanged" : mode === "covered" ? `at ${money2(spot)}` : "between strikes",
+            pnl: flatPnl,
+            note:
+              mode === "put"
+                ? "Put expires worthless — you keep the full premium."
+                : "Both options expire worthless — you keep both premiums. The sweet spot.",
+          },
+          {
+            key: "up",
+            title: "If it goes up",
+            sub: `+${moveLbl}% → ${money2(upPrice)}`,
+            pnl: upPnl,
+            note:
+              mode === "put"
+                ? "Put expires worthless — you keep the premium, and only the premium, however high it climbs."
+                : mode === "strangle"
+                ? "The naked call bites. This loss keeps growing the higher it goes — no ceiling."
+                : "Shares called away at the call strike. Gains are capped here — you don't lose, but you give up the upside.",
+          },
+        ];
 
-  // sample the curve
+  // chart range
   let xMin, xMax;
-  if (mode === "put") {
+  if (mode === "spread") {
+    xMin = longStrike * 0.82;
+    xMax = putStrike * 1.15;
+  } else if (mode === "put") {
     xMin = Math.min(downPrice, putStrike * 0.7);
     xMax = putStrike * 1.15;
   } else {
     xMin = Math.min(downPrice, putStrike * 0.6);
     xMax = Math.max(upPrice, callStrike * 1.35);
   }
+
   const N = 160;
   const samples = [];
   for (let i = 0; i <= N; i++) {
@@ -704,44 +775,45 @@ function buildModel(p, dropPct) {
       if (y1 !== y0) breakevens.push(round2(x0 + (-y0 / (y1 - y0)) * (x1 - x0)));
     }
   }
-  const breakevenLabel = breakevens.length
-    ? breakevens.map((b) => money2(b)).join(" / ")
-    : "—";
+  const breakevenLabel = breakevens.length ? breakevens.map((b) => money2(b)).join(" / ") : "—";
 
-  // markers + dots for the chart
-  const markers = [{ x: putStrike, label: `put ${money2(putStrike)}` }];
-  if (mode !== "put") markers.push({ x: callStrike, label: `call ${money2(callStrike)}` });
+  // chart markers and dots
+  const markers =
+    mode === "spread"
+      ? [
+          { x: longStrike, label: `long ${money2(longStrike)}` },
+          { x: putStrike, label: `short ${money2(putStrike)}` },
+        ]
+      : [{ x: putStrike, label: `put ${money2(putStrike)}` }];
+  if (mode === "strangle" || mode === "covered") markers.push({ x: callStrike, label: `call ${money2(callStrike)}` });
 
-  const dots = [{ x: downPrice, y: downPnl }];
-  if (mode !== "put") dots.push({ x: upPrice, y: upPnl });
+  const dots =
+    mode === "spread"
+      ? [
+          { x: longStrike * 0.97, y: stratPnl(longStrike * 0.97, p) },
+          { x: (putStrike + longStrike) / 2, y: midPnl },
+        ]
+      : [{ x: downPrice, y: downPnl }];
+  if (mode === "strangle" || mode === "covered") dots.push({ x: upPrice, y: upPnl });
 
-  // worst modeled loss for the stat strip
+  // stat strip worst
   let worstLabel, worstValue;
   if (mode === "strangle") {
     worstLabel = `Loss if +${moveLbl}% (and rising)`;
     worstValue = money(upPnl);
+  } else if (mode === "spread") {
+    const maxLoss = stratPnl(longStrike * 0.97, p);
+    worstLabel = "Max possible loss";
+    worstValue = money(maxLoss);
   } else {
     worstLabel = `Loss on a ${moveLbl}% drop`;
     worstValue = money(downPnl);
   }
 
   return {
-    mode,
-    credit,
-    collateral,
-    maxGain,
-    samples,
-    xMin,
-    xMax,
-    markers,
-    dots,
-    scenarios,
-    breakevens,
-    breakevenLabel,
-    worstLabel,
-    worstValue,
-    downPnl,
-    upPnl,
+    mode, credit, collateral, maxGain, samples, xMin, xMax,
+    markers, dots, scenarios, breakevens, breakevenLabel,
+    worstLabel, worstValue, downPnl, upPnl,
   };
 }
 
@@ -989,7 +1061,11 @@ function SizingHint({ mode, capital, perContractCash, maxContracts, contracts, d
     return (
       <div style={styles.sizing}>
         {money(capital)} isn't enough for even one contract — that needs {money(perContractCash)}.{" "}
-        {mode === "covered" ? "Lower the strike, or you're short the share cost." : "Lower the strike or add cash."}
+        {mode === "spread"
+          ? `Narrow the spread (move the long strike closer to the short strike) or widen the long strike.`
+          : mode === "covered"
+          ? "Lower the strike, or you're short the share cost."
+          : "Lower the strike or add cash."}
       </div>
     );
   }
@@ -999,18 +1075,22 @@ function SizingHint({ mode, capital, perContractCash, maxContracts, contracts, d
   const lossRef =
     mode === "strangle"
       ? stratPnl(model.dots[1]?.x ?? p.callStrike * (1 + dropPct / 100), big)
+      : mode === "spread"
+      ? stratPnl(p.longStrike * 0.97, big)
       : stratPnl(p.putStrike * (1 - dropPct / 100), big);
 
   return (
     <div style={styles.sizing}>
       <span>
-        Your {money(capital)} {mode === "covered" ? "funds" : "secures"}{" "}
+        Your {money(capital)} {mode === "covered" ? "funds" : mode === "spread" ? "covers" : "secures"}{" "}
         <b>
           {maxContracts} contract{maxContracts === 1 ? "" : "s"}
         </b>{" "}
-        ({money(used)} tied up, {money(leftover)} left). At that size a {trimNum(dropPct)}% adverse move loses{" "}
-        <b style={{ color: "#e14c4c" }}>{money(lossRef)}</b>
-        {mode === "strangle" ? " — and climbs with no ceiling if it keeps running." : " — sizing up multiplies the loss as much as the premium."}
+        ({money(used)} tied up, {money(leftover)} left).{" "}
+        {mode === "spread"
+          ? <>Max possible loss at that size: <b style={{ color: "#e14c4c" }}>{money(lossRef)}</b> — capped there no matter how far it falls.</>
+          : <>At that size a {trimNum(dropPct)}% adverse move loses <b style={{ color: "#e14c4c" }}>{money(lossRef)}</b>{mode === "strangle" ? " — and climbs with no ceiling if it keeps running." : " — sizing up multiplies the loss as much as the premium."}</>
+        }
       </span>
       {!atMax && (
         <button type="button" onClick={() => onApply(maxContracts)} style={styles.sizingBtn}>
@@ -1021,19 +1101,28 @@ function SizingHint({ mode, capital, perContractCash, maxContracts, contracts, d
   );
 }
 
-function Ticket({ mode, ticker, expiration, putStrike, putPrem, callStrike, callPrem, contracts, collateral }) {
+function Ticket({ mode, ticker, expiration, putStrike, putPrem, longStrike, longPrem, callStrike, callPrem, contracts, collateral }) {
   const [copied, setCopied] = useState(false);
   const sym = ticker || "[symbol]";
   const qty = contracts || 1;
   const exp = formatExp(expiration);
 
-  const legs = [`Sell to Open · ${qty} ${sym} ${exp} ${money2(putStrike)} Put · Limit ${money2(putPrem)} · Day`];
-  if (mode !== "put") legs.push(`Sell to Open · ${qty} ${sym} ${exp} ${money2(callStrike)} Call · Limit ${money2(callPrem)} · Day`);
+  const legs =
+    mode === "spread"
+      ? [
+          `Sell to Open · ${qty} ${sym} ${exp} ${money2(putStrike)} Put · Limit ${money2(putPrem)} · Day`,
+          `Buy to Open  · ${qty} ${sym} ${exp} ${money2(longStrike)} Put · Limit ${money2(longPrem)} · Day`,
+        ]
+      : [`Sell to Open · ${qty} ${sym} ${exp} ${money2(putStrike)} Put · Limit ${money2(putPrem)} · Day`];
+  if (mode === "strangle" || mode === "covered")
+    legs.push(`Sell to Open · ${qty} ${sym} ${exp} ${money2(callStrike)} Call · Limit ${money2(callPrem)} · Day`);
   const order = legs.join("\n");
 
   const tag =
     mode === "put"
       ? "cash-secured put"
+      : mode === "spread"
+      ? `bull put spread — max loss capped at ${money2(putStrike - longStrike - (putPrem - longPrem))} per share`
       : mode === "strangle"
       ? "short strangle — the call is NAKED (uncovered)"
       : "covered strangle — you hold the shares; the put is cash-secured";
@@ -1066,13 +1155,17 @@ function Ticket({ mode, ticker, expiration, putStrike, putPrem, callStrike, call
 
       <ul style={styles.ticketList}>
         <li>
-          <b>Action:</b> Sell to Open every leg — you're opening short options, not buying
+          <b>Action:</b>{" "}
+          {mode === "spread"
+            ? "Sell to Open the short put, Buy to Open the long put — send both legs together as a spread order"
+            : "Sell to Open every leg — you're opening short options, not buying"}
         </li>
         <li>
-          <b>Order type:</b> Limit at each premium, never market{mode !== "put" ? " — many brokers let you send both legs as one order" : ""}
+          <b>Order type:</b> Limit, never market{mode !== "put" ? " — most brokers let you send multi-leg spreads as one order at a net credit" : ""}
         </li>
         <li>
           {mode === "put" && <><b>Cash-secured:</b> keep {money(collateral)} in cash for assignment</>}
+          {mode === "spread" && <><b>Collateral:</b> your broker holds {money(collateral)} — the spread width × contracts. That's the most you can lose. No extra cash needed beyond that.</>}
           {mode === "strangle" && <><b>Naked call:</b> your broker holds margin for it — and the loss is theoretically unlimited</>}
           {mode === "covered" && <><b>Covered:</b> hold {(contracts || 1) * 100} shares for the call; the put stays cash-secured ({money(collateral)} total tied up)</>}
         </li>
