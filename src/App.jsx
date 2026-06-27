@@ -6,44 +6,52 @@ const TOUR_KEY = "csp_tour_done_v1";
 
 const TOUR_STEPS = [
   {
-    title: "Welcome",
-    body: "This tool shows the honest P&L of three options income strategies. You can see exactly what you can win — and more importantly, what you can lose. No hype, no streak counters.",
-    icon: "📊",
+    tag: "The trade",
+    title: "You sell a put",
+    setup: "2 contracts · $50 strike · $1.50 premium",
+    outcome: "+$300",
+    good: true,
+    body: "You collect $300 upfront and set aside $10,000 in cash collateral. In return, you're obligated to buy 200 shares at $50 if the stock falls below that price by expiration.",
   },
   {
-    title: "Pick a company",
-    body: "Choose a stock from the dropdown and it auto-fills the current share price and sets a sensible strike. Or skip it and type your own strike manually.",
-    icon: "🏢",
+    tag: "Scenario 1 — stock drops",
+    title: "Stock falls to $40",
+    setup: "−20% · below your $50 strike",
+    outcome: "−$1,700",
+    good: false,
+    body: "You're assigned — forced to buy 200 shares at $50 when they're worth $40. That's a $2,000 loss on paper, minus the $300 premium you already collected. Net: −$1,700. This is the side the ads skip.",
   },
   {
-    title: "Choose a strategy",
-    body: "Cash-secured put (simplest — sell one put, hold cash). Short strangle (sell a put and call — the naked call has no loss ceiling). Covered strangle (you own the shares too).",
-    icon: "⚖️",
+    tag: "Scenario 2 — stock flat",
+    title: "Stock stays near $50",
+    setup: "At or above your strike",
+    outcome: "+$300",
+    good: true,
+    body: "The put expires worthless. Nobody exercises it — there's no reason to make you buy at $50 when the stock is worth $50 or more. You keep the $300 and your $10,000 is released.",
   },
   {
-    title: "Pull a real premium",
-    body: 'Pick an expiration date, then hit "Pull real premium →" — it fetches the real bid/ask midpoint from the live options chain and fills it in for you.',
-    icon: "💰",
+    tag: "Scenario 3 — stock rises",
+    title: "Stock climbs to $60",
+    setup: "+20% · above your strike",
+    outcome: "+$300",
+    good: true,
+    body: "Put expires worthless again. You keep $300. But the stock gained $2,000 — and you weren't holding it, so that upside wasn't yours. Your gain is capped at the premium, no matter how high it goes.",
   },
   {
-    title: "Read the chart",
-    body: "The flat green line is the most you can ever make. The red pulsing dot is where you land if the stock moves against you. That gap between them is the whole story.",
-    icon: "📈",
+    tag: "The asymmetry",
+    title: "The gap is the whole point",
+    setup: "Max gain: $300 · Potential loss: much more",
+    outcome: null,
+    good: null,
+    body: "Scenarios 2 and 3 both pay $300. Scenario 1 can lose many times that — and the further the stock falls, the worse it gets. The chart draws this curve. Flat green ceiling on top, red drop below. That gap is why this tool exists.",
   },
   {
-    title: "Scenario cards",
-    body: "Three cards below the chart show your exact P&L if the stock goes down, stays flat, or goes up. Red is a loss — it's never hidden.",
-    icon: "🎯",
-  },
-  {
-    title: "Order ticket",
-    body: "The order ticket gives you the exact words to use at your broker — copy it and paste it directly into the order screen.",
-    icon: "📋",
-  },
-  {
-    title: "Paper journal",
-    body: "Log trades you're watching. When they close, record what actually happened — wins and losses equally. An honest record only works if you log the bad weeks too.",
-    icon: "📓",
+    tag: "Now try it",
+    title: "Adjust the numbers above",
+    setup: "Your actual trade",
+    outcome: null,
+    good: null,
+    body: "Change the strike, premium, and contracts to match a trade you're considering. Pick a real company to auto-fill the price. The chart, scenarios, and order ticket all update live.",
   },
 ];
 
@@ -1052,15 +1060,27 @@ function Scenarios({ cards }) {
 function Tour({ step, onNext, onDone, onSkip }) {
   const s = TOUR_STEPS[step];
   const isLast = step === TOUR_STEPS.length - 1;
+  const hasOutcome = s.outcome != null;
   return (
     <div style={styles.tourOverlay}>
       <div style={styles.tourCard}>
-        <div style={styles.tourIcon}>{s.icon}</div>
-        <div style={styles.tourMeta}>
-          {step + 1} of {TOUR_STEPS.length}
-        </div>
+        <div style={styles.tourTag}>{s.tag}</div>
         <div style={styles.tourTitle}>{s.title}</div>
+        {s.setup && <div style={styles.tourSetup}>{s.setup}</div>}
+
+        {hasOutcome && (
+          <div style={{
+            ...styles.tourOutcome,
+            color: s.good ? "#16a34a" : "#e14c4c",
+            background: s.good ? "#f0fdf4" : "#fff5f5",
+            border: `1px solid ${s.good ? "#bbf7d0" : "#fecaca"}`,
+          }}>
+            {s.outcome}
+          </div>
+        )}
+
         <div style={styles.tourBody}>{s.body}</div>
+
         <div style={styles.tourActions}>
           <button type="button" onClick={onSkip} style={styles.tourSkip}>
             Skip
@@ -1071,10 +1091,7 @@ function Tour({ step, onNext, onDone, onSkip }) {
         </div>
         <div style={styles.tourDots}>
           {TOUR_STEPS.map((_, i) => (
-            <span
-              key={i}
-              style={{ ...styles.tourDot, background: i === step ? "#1f2937" : "#e2e8f0" }}
-            />
+            <span key={i} style={{ ...styles.tourDot, background: i === step ? "#1f2937" : "#e2e8f0" }} />
           ))}
         </div>
       </div>
@@ -1170,15 +1187,16 @@ const styles = {
   journalPnl: { fontSize: 16, fontWeight: 700, letterSpacing: "-0.01em" },
   journalNote: { fontSize: 12, color: "#cf9a3a", marginTop: 12, lineHeight: 1.5 },
   deleteBtn: { border: "none", background: "transparent", color: "#cbd5e1", fontSize: 14, cursor: "pointer", padding: "4px 6px", lineHeight: 1 },
-  tourOverlay: { position: "fixed", inset: 0, background: "rgba(15,23,42,0.55)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 },
-  tourCard: { background: "#fff", borderRadius: 20, padding: "32px 28px 24px", maxWidth: 400, width: "100%", boxShadow: "0 24px 64px rgba(15,23,42,0.18)", textAlign: "center" },
-  tourIcon: { fontSize: 40, marginBottom: 10 },
-  tourMeta: { fontSize: 12, color: "#94a3b8", fontWeight: 600, letterSpacing: "0.05em", marginBottom: 8 },
-  tourTitle: { fontSize: 20, fontWeight: 700, letterSpacing: "-0.02em", color: "#0f172a", marginBottom: 12 },
-  tourBody: { fontSize: 14, color: "#475569", lineHeight: 1.6, marginBottom: 24 },
-  tourActions: { display: "flex", gap: 10, justifyContent: "center", marginBottom: 20 },
+  tourOverlay: { position: "fixed", inset: 0, background: "rgba(15,23,42,0.6)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 },
+  tourCard: { background: "#fff", borderRadius: 20, padding: "28px 28px 22px", maxWidth: 420, width: "100%", boxShadow: "0 24px 64px rgba(15,23,42,0.2)", textAlign: "center" },
+  tourTag: { fontSize: 11, fontWeight: 700, color: "#94a3b8", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 10 },
+  tourTitle: { fontSize: 22, fontWeight: 700, letterSpacing: "-0.02em", color: "#0f172a", marginBottom: 6 },
+  tourSetup: { fontSize: 13, color: "#64748b", marginBottom: 16 },
+  tourOutcome: { fontSize: 36, fontWeight: 800, letterSpacing: "-0.03em", borderRadius: 12, padding: "14px 0", marginBottom: 16 },
+  tourBody: { fontSize: 14, color: "#475569", lineHeight: 1.65, marginBottom: 24, textAlign: "left" },
+  tourActions: { display: "flex", gap: 10, justifyContent: "center", marginBottom: 18 },
   tourSkip: { border: "1px solid #e2e8f0", borderRadius: 10, background: "#fff", color: "#94a3b8", fontSize: 13, fontWeight: 600, padding: "10px 20px", cursor: "pointer" },
-  tourNext: { border: "none", borderRadius: 10, background: "#1f2937", color: "#fff", fontSize: 13, fontWeight: 700, padding: "10px 24px", cursor: "pointer" },
+  tourNext: { border: "none", borderRadius: 10, background: "#1f2937", color: "#fff", fontSize: 13, fontWeight: 700, padding: "10px 28px", cursor: "pointer" },
   tourDots: { display: "flex", gap: 6, justifyContent: "center" },
   tourDot: { width: 6, height: 6, borderRadius: "50%", display: "inline-block" },
 };
