@@ -2,6 +2,7 @@ import React, { useMemo, useState, useEffect, useRef } from "react";
 import { normCdf, lnDensity, bsPrice, bsGreeks, solveIv, realizedVol as calcRealizedVol } from "./lib/blackScholes.js";
 import { popFromDelta, expectedMove, cushionSigma, popPlain, cushionPlain } from "./lib/probability.js";
 import { richnessSignal } from "./lib/richness.js";
+import { opportunityScore, scoreGrade, autopilotChecks, marketCondition as computeMarketCondition } from "./lib/score.js";
 
 const STORAGE_KEY = "csp_visualizer_inputs_v1";
 const JOURNAL_KEY = "csp_journal_v1";
@@ -348,6 +349,7 @@ export default function App() {
   const [rvol, setRvol] = useState(null);      // realized vol from 30d price history
   const [delta, setDelta] = useState(null);    // from Alpaca option snapshot
   const [tab, setTab] = useState("today");
+  const [aiContext, setAiContext] = useState({ picks: [], marketCondition: null });
   const appliedRef = useRef(null);
 
   function dismissTour() {
@@ -589,8 +591,9 @@ export default function App() {
         </header>
 
         {tab === "today" && (
-          <DailyPicksView
+          <TodayView
             capital={capital}
+            onPicksReady={(ctx) => setAiContext({ picks: ctx.picks, marketCondition: ctx.condition, capital })}
             onLoadTrade={(pick) => {
               setTab("calculator");
               setInputs(s => ({
@@ -794,6 +797,7 @@ export default function App() {
           Prices ~15-min delayed · for learning only, not live order entry · not financial advice · the red number is the part that matters
         </footer>
       </div>
+      <AiAssistant context={{ ...aiContext, capital }} />
     </div>
   );
 }
@@ -1614,9 +1618,12 @@ function Scenarios({ cards }) {
   );
 }
 
-function DailyPicksView({ capital, onLoadTrade }) {
+// ─── Today's AI Coach View ───────────────────────────────────────────────────
+
+function TodayView({ capital, onLoadTrade, onPicksReady }) {
   const [picks, setPicks] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [condition, setCondition] = useState(null);
   const [lastRun, setLastRun] = useState(null);
   const exp = useMemo(() => targetExpiration(30), []);
   const dte = useMemo(() => computeDte(exp), [exp]);
@@ -1648,7 +1655,6 @@ function DailyPicksView({ capital, onLoadTrade }) {
         const { premium, iv, delta: mktDelta } = optData;
         const richness = (iv > 0 && rvol > 0) ? richnessSignal(iv, rvol) : null;
 
-        // Spread math — estimate long put premium from BS using the same IV
         const sw = spreadWidthFor(price);
         const longStrikeVal = Math.max(0.5, strike - sw);
         const longPremEst = (iv > 0)
@@ -1660,173 +1666,391 @@ function DailyPicksView({ capital, onLoadTrade }) {
         const canAfford = capital >= collateral;
         const contracts = canAfford ? Math.floor(capital / collateral) : 0;
 
-        // POP: use market delta if available, fall back to BS
-        let pop = null;
         const putDelta = mktDelta ?? (iv > 0 ? bsGreeks(price, strike, dte, 0.05, iv, "put").delta : null);
-        if (putDelta != null) pop = 1 - Math.abs(putDelta);
+        const pop = putDelta != null ? 1 - Math.abs(putDelta) : null;
 
         const expMove = expectedMove(price, iv || 0, dte);
         const cSigma = cushionSigma(price, strike, expMove);
-        const annYield = (netCredit / sw) * (365 / dte) * 100;
+        const annYield = (netCredit / sw) * (365 / Math.max(dte, 1)) * 100;
+        const capitalPct = collateral / capital;
+        const maxLossPct = maxLoss / capital;
+
+        const score = opportunityScore({ richness, pop, cushion: cSigma, canAfford, capitalPct, annYield, maxLossPct });
+        const grade = scoreGrade(score);
 
         return {
           sym, name: company.name, price, strike, premium, iv, rvol, dte,
-          richness, pop, cushion: cSigma, annYield,
+          richness, pop, cushion: cSigma, annYield, score, grade,
           sw, longStrikeVal, netCredit, collateral, maxLoss, canAfford, contracts,
-          deltaSource: mktDelta != null ? "market" : iv > 0 ? "calculated" : null,
+          capitalPct, maxLossPct,
+          earn: Math.round(netCredit * 100 * contracts),
+          lose: Math.round(maxLoss * contracts),
+          collateralUsed: collateral * contracts,
+          richnessTag: richness?.tag,
+          richnessHeadline: richness?.headline,
+          cushionDesc: cSigma >= 1.5 ? "very large" : cSigma >= 1.0 ? "larger-than-normal" : "notable",
           available: true,
         };
       })
     );
 
-    const tagOrder = { rich: 3, fair: 2, cheap: 1 };
-    const sorted = results.sort((a, b) => {
-      if (!a.available && !b.available) return 0;
-      if (!a.available) return 1;
-      if (!b.available) return -1;
-      if (!a.canAfford && b.canAfford) return 1;
-      if (a.canAfford && !b.canAfford) return -1;
-      const as = tagOrder[a.richness?.tag] ?? 0;
-      const bs = tagOrder[b.richness?.tag] ?? 0;
-      if (as !== bs) return bs - as;
-      return (b.cushion || 0) - (a.cushion || 0);
-    });
+    const affordable = results.filter(p => p.available && p.canAfford).sort((a, b) => b.score - a.score);
+    const cond = computeMarketCondition(affordable.map(p => p.richness?.tag).filter(Boolean));
+    const top = affordable.slice(0, 3);
 
-    setPicks(sorted);
+    setPicks(top);
+    setCondition(cond);
     setLastRun(new Date());
+    onPicksReady?.({ picks: top, condition: cond });
     setLoading(false);
   }
 
   if (loading) {
     return (
-      <div style={{ padding: "48px 0", textAlign: "center", color: "#64748b" }}>
-        <div style={{ fontSize: 28, marginBottom: 12 }}>🔍</div>
-        <div style={{ fontWeight: 600, marginBottom: 6 }}>Scanning {COMPANIES.length} stocks…</div>
-        <div style={{ fontSize: 13, color: "#94a3b8" }}>Checking live prices, option premiums, and 30-day price history for each one.</div>
+      <div style={{ padding: "64px 0", textAlign: "center" }}>
+        <div style={{ fontSize: 32, marginBottom: 16 }}>🔍</div>
+        <div style={{ fontWeight: 700, fontSize: 16, color: "#0f172a", marginBottom: 6 }}>
+          Scanning {COMPANIES.length} stocks…
+        </div>
+        <div style={{ fontSize: 13, color: "#94a3b8" }}>
+          Checking live prices, option premiums, and price history to find today's best setups.
+        </div>
       </div>
     );
   }
 
-  const good = picks.filter(p => p.available && p.canAfford && p.richness?.tag === "rich");
-  const ok = picks.filter(p => p.available && p.canAfford && p.richness?.tag === "fair");
-  const bad = picks.filter(p => p.available && p.canAfford && p.richness?.tag === "cheap");
-  const noData = picks.filter(p => !p.available || !p.canAfford);
+  const noTrades = picks.length === 0 || (picks[0]?.score ?? 0) < 35;
 
   return (
-    <div>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20, flexWrap: "wrap", gap: 8 }}>
-        <div>
-          <div style={{ fontWeight: 700, fontSize: 18, color: "#0f172a" }}>
-            {good.length > 0 ? `${good.length} stock${good.length > 1 ? "s" : ""} worth looking at today` : "Nothing great today — see what's close"}
+    <div style={{ paddingTop: 8 }}>
+      {/* Market condition banner */}
+      {condition && (
+        <div style={{
+          background: condition.color + "12",
+          border: `1.5px solid ${condition.color}30`,
+          borderRadius: 12,
+          padding: "16px 20px",
+          marginBottom: 24,
+        }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: condition.color, letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 4 }}>
+                {condition.emoji} {condition.label}
+              </div>
+              <div style={{ fontSize: 13, color: "#0f172a", lineHeight: 1.5 }}>
+                {condition.summary}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={runScan}
+              style={{ fontSize: 11, color: "#64748b", background: "none", border: "1px solid #e2e8f0", borderRadius: 8, padding: "6px 12px", cursor: "pointer" }}
+            >
+              Refresh ↺
+            </button>
           </div>
-          <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 2 }}>
-            ~{dte}-day spreads · {exp} expiry{lastRun ? ` · scanned ${lastRun.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : ""}
-          </div>
-        </div>
-        <button type="button" onClick={runScan} style={{ ...styles.tourNext, fontSize: 12, padding: "8px 16px" }}>
-          Rescan ↺
-        </button>
-      </div>
-
-      {good.length > 0 && (
-        <div style={{ marginBottom: 24 }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: "#16a34a", letterSpacing: "0.07em", textTransform: "uppercase", marginBottom: 10 }}>
-            ✅ Good time to sell
-          </div>
-          <div style={styles.picksGrid}>
-            {good.map(p => <PickCard key={p.sym} pick={p} capital={capital} onLoad={onLoadTrade} />)}
-          </div>
-        </div>
-      )}
-
-      {ok.length > 0 && (
-        <div style={{ marginBottom: 24 }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: "#d97706", letterSpacing: "0.07em", textTransform: "uppercase", marginBottom: 10 }}>
-            🟡 About average — fine to trade
-          </div>
-          <div style={styles.picksGrid}>
-            {ok.map(p => <PickCard key={p.sym} pick={p} capital={capital} onLoad={onLoadTrade} />)}
+          <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 8 }}>
+            {exp} expiry · ~{dte} days · scanned {lastRun ? lastRun.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "just now"}
           </div>
         </div>
       )}
 
-      {bad.length > 0 && (
-        <div style={{ marginBottom: 24 }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: "#e14c4c", letterSpacing: "0.07em", textTransform: "uppercase", marginBottom: 10 }}>
-            ⚠️ Probably not worth selling right now
+      {noTrades ? (
+        <div style={{ textAlign: "center", padding: "48px 24px", background: "#f8fafc", borderRadius: 16, border: "1.5px solid #e2e8f0" }}>
+          <div style={{ fontSize: 40, marginBottom: 16 }}>🧘</div>
+          <div style={{ fontWeight: 700, fontSize: 20, color: "#0f172a", marginBottom: 8 }}>
+            No trade today.
           </div>
-          <div style={styles.picksGrid}>
-            {bad.map(p => <PickCard key={p.sym} pick={p} capital={capital} onLoad={onLoadTrade} />)}
+          <div style={{ fontSize: 15, color: "#475569", marginBottom: 6 }}>
+            Cash is a position too.
+          </div>
+          <div style={{ fontSize: 13, color: "#94a3b8", maxWidth: 320, margin: "0 auto" }}>
+            The conditions don't justify taking risk right now. Sitting out is a discipline skill — most people only learn it after losing money.
           </div>
         </div>
-      )}
-
-      {noData.length > 0 && (
-        <details style={{ marginTop: 8 }}>
-          <summary style={{ fontSize: 12, color: "#94a3b8", cursor: "pointer" }}>
-            {noData.length} stock{noData.length > 1 ? "s" : ""} with no live data or out of budget
-          </summary>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 8 }}>
-            {noData.map(p => (
-              <span key={p.sym} style={{ fontSize: 12, color: "#94a3b8", background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 6, padding: "4px 10px" }}>
-                {p.sym} {!p.canAfford ? `· needs $${p.collateral}` : "· no option data"}
-              </span>
+      ) : (
+        <>
+          <div style={{ fontWeight: 700, fontSize: 15, color: "#0f172a", marginBottom: 16 }}>
+            Today's best {picks.length === 1 ? "opportunity" : `${picks.length} opportunities`}
+          </div>
+          <div style={styles.picksGrid}>
+            {picks.map(p => (
+              <OpportunityCard key={p.sym} pick={p} capital={capital} onLoad={onLoadTrade} />
             ))}
           </div>
-        </details>
+        </>
       )}
-
-      <p style={{ fontSize: 11.5, color: "#94a3b8", marginTop: 20, lineHeight: 1.6 }}>
-        "Good time to sell" means the market is pricing in more fear than this stock has actually shown recently — that gap is extra premium in your pocket. It is not a prediction. Always size for the worst case, not the premium you want to collect.
-      </p>
     </div>
   );
 }
 
-function PickCard({ pick, capital, onLoad }) {
-  const { sym, name, price, strike, netCredit, collateral, maxLoss, contracts, richness, pop, cushion, dte, sw, longStrikeVal, annYield } = pick;
-  const tagColor = richness?.tag === "rich" ? "#16a34a" : richness?.tag === "cheap" ? "#e14c4c" : "#d97706";
-  const earn = Math.round(netCredit * 100 * contracts);
-  const lose = Math.round(maxLoss * contracts);
+function OpportunityCard({ pick, capital, onLoad }) {
+  const [showAll, setShowAll] = useState(false);
+  const { sym, name, price, strike, sw, longStrikeVal, dte, score, grade,
+          earn, lose, collateralUsed, pop, cushion, richness,
+          canAfford, capitalPct, maxLossPct } = pick;
   const popN = pop != null ? Math.round(pop * 100) : null;
 
+  const checks = autopilotChecks({ richness, pop, canAfford, maxLossPct, cushion, capitalPct });
+  const passing = checks.filter(c => !c.manual && c.pass && !c.warn);
+  const cautious = checks.filter(c => !c.manual && (c.warn || (!c.pass && c.warnLabel)));
+  const failed = checks.filter(c => !c.manual && !c.pass && !c.warn && !c.warnLabel);
+
+  const positives = passing.slice(0, 4);
+  const negatives = [...cautious, ...failed].slice(0, 3);
+
   return (
-    <div style={{ border: `1.5px solid ${tagColor}22`, borderRadius: 12, background: "#fff", padding: "16px 18px", display: "flex", flexDirection: "column", gap: 10 }}>
+    <div style={{
+      border: `1.5px solid ${grade.color}30`,
+      borderRadius: 14,
+      background: "#fff",
+      padding: "20px",
+      display: "flex",
+      flexDirection: "column",
+      gap: 14,
+    }}>
+      {/* Header */}
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8 }}>
         <div>
-          <span style={{ fontWeight: 800, fontSize: 16, color: "#0f172a" }}>{sym}</span>
-          <span style={{ fontSize: 12, color: "#94a3b8", marginLeft: 6 }}>{name}</span>
+          <div style={{ fontWeight: 800, fontSize: 22, color: "#0f172a", lineHeight: 1 }}>{sym}</div>
+          <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 3 }}>{name}</div>
         </div>
-        <span style={{ fontSize: 11, fontWeight: 700, color: tagColor, background: `${tagColor}15`, borderRadius: 20, padding: "3px 10px", whiteSpace: "nowrap" }}>
-          {richness?.tag === "rich" ? "Worth selling" : richness?.tag === "fair" ? "About average" : "Thin premium"}
-        </span>
+        <div style={{ textAlign: "right" }}>
+          <div style={{ fontSize: 24, fontWeight: 800, color: grade.color, lineHeight: 1 }}>{score}</div>
+          <div style={{ fontSize: 10, fontWeight: 700, color: grade.color, letterSpacing: "0.05em", textTransform: "uppercase" }}>{grade.label}</div>
+        </div>
       </div>
 
-      <div style={{ fontSize: 13, color: "#0f172a", lineHeight: 1.5 }}>
-        {richness?.headline}
-      </div>
+      {/* Why I like this trade */}
+      {positives.length > 0 && (
+        <div>
+          <div style={{ fontSize: 11, fontWeight: 700, color: "#16a34a", letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 8 }}>
+            Why I like this trade
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+            {positives.map(c => (
+              <div key={c.key} style={{ fontSize: 13, color: "#0f172a", display: "flex", gap: 7, alignItems: "flex-start" }}>
+                <span style={{ color: "#16a34a", marginTop: 1, flexShrink: 0 }}>✓</span>
+                <span>{c.label}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "6px 16px", fontSize: 12 }}>
+      {/* Cautions */}
+      {negatives.length > 0 && (
+        <div>
+          <div style={{ fontSize: 11, fontWeight: 700, color: "#d97706", letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 8 }}>
+            Worth knowing
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+            {negatives.map(c => (
+              <div key={c.key} style={{ fontSize: 13, color: "#92400e", display: "flex", gap: 7, alignItems: "flex-start" }}>
+                <span style={{ marginTop: 1, flexShrink: 0 }}>•</span>
+                <span>{c.warnLabel || c.fail}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Numbers */}
+      <div style={{
+        display: "grid",
+        gridTemplateColumns: "1fr 1fr",
+        gap: "8px 20px",
+        background: "#f8fafc",
+        borderRadius: 10,
+        padding: "14px 16px",
+        fontSize: 13,
+      }}>
         <div style={{ color: "#64748b" }}>You collect</div>
-        <div style={{ fontWeight: 700, color: "#16a34a" }}>+{money(earn)}{contracts > 1 ? ` (${contracts}×)` : ""}</div>
+        <div style={{ fontWeight: 700, color: "#16a34a" }}>+{money(earn)}</div>
         <div style={{ color: "#64748b" }}>Worst case</div>
         <div style={{ fontWeight: 700, color: "#e14c4c" }}>−{money(lose)}</div>
-        <div style={{ color: "#64748b" }}>Collateral held</div>
-        <div style={{ color: "#475569" }}>{money(collateral * contracts)}</div>
-        {popN != null && <><div style={{ color: "#64748b" }}>Odds of winning</div><div style={{ color: "#475569" }}>{popN} in 100</div></>}
-        {cushion != null && <><div style={{ color: "#64748b" }}>Your buffer</div><div style={{ color: "#475569" }}>{cushion.toFixed(1)}× normal range</div></>}
+        {popN != null && <>
+          <div style={{ color: "#64748b" }}>Odds of winning</div>
+          <div style={{ color: "#0f172a" }}>{popN} in 100</div>
+        </>}
+        <div style={{ color: "#64748b" }}>Uses from account</div>
+        <div style={{ color: "#0f172a" }}>{money(collateralUsed)}</div>
       </div>
 
-      <div style={{ fontSize: 11.5, color: "#94a3b8", borderTop: "1px solid #f1f5f9", paddingTop: 8 }}>
-        Sell {strike}P · Buy {money2(longStrikeVal)}P · {sw}-pt spread · {dte} days · {money2(price)} now
+      {/* Earnings reminder — always shown */}
+      <div style={{ fontSize: 12, color: "#92400e", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 8, padding: "8px 12px" }}>
+        ⚠ Check the earnings calendar before entering this trade — sudden announcements can override everything else.
+      </div>
+
+      {/* Autopilot checklist expand */}
+      <button
+        type="button"
+        onClick={() => setShowAll(o => !o)}
+        style={{ fontSize: 12, color: "#64748b", background: "none", border: "none", cursor: "pointer", textAlign: "left", padding: 0 }}
+      >
+        {showAll ? "▲ Hide checklist" : "▼ Show full autopilot checklist (8 checks)"}
+      </button>
+      {showAll && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {checks.map(c => {
+            const isManual = c.manual;
+            const icon = isManual ? "⚠" : c.pass && !c.warn ? "✅" : c.warn ? "🟡" : "❌";
+            const text = isManual ? c.label : c.pass && !c.warn ? c.label : c.warn ? (c.warnLabel || c.label) : c.fail;
+            return (
+              <div key={c.key} style={{ display: "flex", gap: 8, fontSize: 12, color: isManual ? "#92400e" : c.pass && !c.warn ? "#166534" : c.warn ? "#92400e" : "#991b1b" }}>
+                <span style={{ flexShrink: 0 }}>{icon}</span>
+                <span>{text}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Details */}
+      <div style={{ fontSize: 11, color: "#94a3b8", borderTop: "1px solid #f1f5f9", paddingTop: 10 }}>
+        Sell {money2(strike)} put · Buy {money2(longStrikeVal)} put · {sw}-point spread · {dte} days · stock at {money2(price)}
       </div>
 
       <button
         type="button"
         onClick={() => onLoad(pick)}
-        style={{ ...styles.tourNext, fontSize: 12, padding: "9px 0", width: "100%", marginTop: 2 }}
+        style={{ ...styles.tourNext, fontSize: 13, padding: "11px 0", width: "100%" }}
       >
-        Load this trade in calculator →
+        Show Me The Trade →
+      </button>
+    </div>
+  );
+}
+
+// ─── AI Coach Assistant ────────────────────────────────────────────────────────
+
+function AiAssistant({ context }) {
+  const [open, setOpen] = useState(false);
+  const [messages, setMessages] = useState([{
+    role: "assistant",
+    content: "Hi! Ask me anything about today's trades — why I picked them, what could go wrong, whether you can afford two contracts. Plain English only.",
+  }]);
+  const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const bottomRef = useRef(null);
+
+  useEffect(() => {
+    if (open) bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, open]);
+
+  async function send() {
+    const text = input.trim();
+    if (!text || busy) return;
+    const userMsg = { role: "user", content: text };
+    const next = [...messages, userMsg];
+    setMessages(next);
+    setInput("");
+    setBusy(true);
+    try {
+      const r = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ messages: next, context }),
+      });
+      const d = await r.json();
+      if (!d.available && d.available !== undefined) {
+        setMessages(m => [...m, { role: "assistant", content: "The AI coach isn't set up yet. Ask me after you add an ANTHROPIC_API_KEY to your environment." }]);
+      } else {
+        setMessages(m => [...m, { role: "assistant", content: d.reply ?? "Sorry, something went wrong." }]);
+      }
+    } catch {
+      setMessages(m => [...m, { role: "assistant", content: "Couldn't reach the AI coach right now. Try again." }]);
+    }
+    setBusy(false);
+  }
+
+  return (
+    <div style={{ position: "fixed", bottom: 24, right: 24, zIndex: 200, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 12 }}>
+      {open && (
+        <div style={{
+          width: 340,
+          maxHeight: 480,
+          background: "#fff",
+          borderRadius: 16,
+          boxShadow: "0 8px 32px rgba(0,0,0,0.18)",
+          display: "flex",
+          flexDirection: "column",
+          overflow: "hidden",
+          border: "1px solid #e2e8f0",
+        }}>
+          {/* Header */}
+          <div style={{ padding: "14px 16px", background: "#0f172a", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: 14, color: "#fff" }}>AI Coach</div>
+              <div style={{ fontSize: 11, color: "#94a3b8" }}>Plain English · No jargon</div>
+            </div>
+            <button type="button" onClick={() => setOpen(false)} style={{ background: "none", border: "none", color: "#94a3b8", fontSize: 18, cursor: "pointer", lineHeight: 1 }}>×</button>
+          </div>
+          {/* Messages */}
+          <div style={{ flex: 1, overflowY: "auto", padding: "12px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
+            {messages.map((m, i) => (
+              <div key={i} style={{
+                alignSelf: m.role === "user" ? "flex-end" : "flex-start",
+                background: m.role === "user" ? "#0f172a" : "#f1f5f9",
+                color: m.role === "user" ? "#fff" : "#0f172a",
+                borderRadius: m.role === "user" ? "14px 14px 2px 14px" : "14px 14px 14px 2px",
+                padding: "9px 13px",
+                fontSize: 13,
+                lineHeight: 1.5,
+                maxWidth: "88%",
+              }}>
+                {m.content}
+              </div>
+            ))}
+            {busy && (
+              <div style={{ alignSelf: "flex-start", background: "#f1f5f9", borderRadius: "14px 14px 14px 2px", padding: "9px 14px", fontSize: 13, color: "#94a3b8" }}>
+                Thinking…
+              </div>
+            )}
+            <div ref={bottomRef} />
+          </div>
+          {/* Input */}
+          <div style={{ padding: "10px 12px", borderTop: "1px solid #e2e8f0", display: "flex", gap: 8 }}>
+            <input
+              type="text"
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && !e.shiftKey && send()}
+              placeholder="Why AMD? What if it drops 10%?"
+              style={{
+                flex: 1, border: "1px solid #e2e8f0", borderRadius: 8, padding: "8px 10px",
+                fontSize: 13, outline: "none", color: "#0f172a",
+              }}
+              disabled={busy}
+            />
+            <button
+              type="button"
+              onClick={send}
+              disabled={busy || !input.trim()}
+              style={{
+                background: "#0f172a", color: "#fff", border: "none", borderRadius: 8,
+                padding: "8px 14px", fontSize: 13, cursor: busy ? "default" : "pointer",
+                opacity: (busy || !input.trim()) ? 0.5 : 1,
+              }}
+            >
+              →
+            </button>
+          </div>
+        </div>
+      )}
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        title="Ask your AI coach"
+        style={{
+          width: 52, height: 52, borderRadius: "50%",
+          background: "#0f172a", color: "#fff", border: "none",
+          fontSize: 22, cursor: "pointer",
+          boxShadow: "0 4px 16px rgba(0,0,0,0.22)",
+          display: "flex", alignItems: "center", justifyContent: "center",
+        }}
+      >
+        {open ? "×" : "💬"}
       </button>
     </div>
   );
