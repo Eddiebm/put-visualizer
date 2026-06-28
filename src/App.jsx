@@ -1534,12 +1534,28 @@ function Ticket({ mode, ticker, expiration, putStrike, putPrem, longStrike, long
         </li>
       </ul>
 
+      {(() => {
+        const credit = mode === "spread" ? ((putPrem || 0) - (longPrem || 0)) : (putPrem || 0);
+        const maxGain = Math.round(credit * 100 * (contracts || 1));
+        const stopLoss = maxGain * 2;
+        return (
+          <div style={{
+            marginTop: 14, background: "#fafafa", border: "1px solid #e2e8f0",
+            borderRadius: 8, padding: "10px 14px", fontSize: 12, color: "#475569",
+          }}>
+            <b style={{ color: "#0f172a" }}>Stop-loss rule:</b> close this trade if your loss reaches{" "}
+            <b style={{ color: "#e14c4c" }}>{money(stopLoss)}</b>
+            {" "}(2× the {money(maxGain)} you collect today). Don't let a bad week turn into a catastrophe.
+          </div>
+        );
+      })()}
+
       {tastyConnected ? (
         <button
           type="button"
           onClick={onPlaceOrder}
           style={{
-            marginTop: 14, width: "100%", padding: "13px 0",
+            marginTop: 10, width: "100%", padding: "13px 0",
             background: "#16a34a", color: "#fff", border: "none",
             borderRadius: 10, fontSize: 15, fontWeight: 700, cursor: "pointer",
             letterSpacing: "0.01em",
@@ -1616,6 +1632,7 @@ function Journal({ journal, onLog, onClose, onDelete }) {
 function JournalRow({ e, onClose, onDelete }) {
   const [px, setPx] = useState("");
   const [currentPrice, setCurrentPrice] = useState(null);
+  const [currentOptionPrice, setCurrentOptionPrice] = useState(null);
   const open = e.status === "open";
   const loss = e.status === "closed" && e.realizedPnl < 0;
 
@@ -1625,7 +1642,21 @@ function JournalRow({ e, onClose, onDelete }) {
       .then(r => r.ok ? r.json() : null)
       .then(d => { if (d?.price > 0) setCurrentPrice(d.price); })
       .catch(() => {});
-  }, [open, e.ticker]);
+    // Fetch live option price for P&L monitoring
+    if (e.putStrike && e.expiration) {
+      fetch(`/api/option?symbol=${encodeURIComponent(e.ticker)}&expiration=${e.expiration}&strike=${e.putStrike}`)
+        .then(r => r.ok ? r.json() : null)
+        .then(d => { if (d?.available && d.premium > 0) setCurrentOptionPrice(d.premium); })
+        .catch(() => {});
+    }
+  }, [open, e.ticker, e.putStrike, e.expiration]);
+
+  const stopLossAt = e.credit * 2; // close if loss exceeds 2× what was collected
+  const unrealizedPnl = currentOptionPrice != null && e.putPrem > 0 && e.contracts > 0
+    ? e.credit - (currentOptionPrice * 100 * e.contracts)
+    : null;
+  const stopLossHit = unrealizedPnl != null && unrealizedPnl < -stopLossAt;
+  const stopLossWarning = unrealizedPnl != null && unrealizedPnl < -(stopLossAt * 0.7) && !stopLossHit;
 
   function monitorStatus() {
     if (!currentPrice || !e.putStrike) return null;
@@ -1650,6 +1681,37 @@ function JournalRow({ e, onClose, onDelete }) {
           opened {e.openedAt} · exp {e.expiration} · collected {money(e.credit)}
           {e.status === "closed" && ` · closed ${e.closedAt} @ ${money2(e.closePrice)}`}
         </div>
+        {stopLossHit && (
+          <div style={{
+            marginTop: 6, fontSize: 12, fontWeight: 700,
+            color: "#fff", background: "#e14c4c",
+            borderRadius: 6, padding: "6px 10px", display: "inline-block",
+          }}>
+            🚨 Stop-loss hit — close this trade now
+            <span style={{ fontWeight: 400, marginLeft: 6, opacity: 0.9 }}>
+              Loss has reached {money(Math.abs(unrealizedPnl ?? 0))} (limit: {money(stopLossAt)})
+            </span>
+          </div>
+        )}
+        {stopLossWarning && !stopLossHit && (
+          <div style={{
+            marginTop: 6, fontSize: 12, fontWeight: 600,
+            color: "#92400e", background: "#fffbeb",
+            borderRadius: 6, padding: "5px 9px", display: "inline-block",
+          }}>
+            ⚠ Approaching stop-loss — loss is {money(Math.abs(unrealizedPnl ?? 0))} (limit: {money(stopLossAt)})
+          </div>
+        )}
+        {!stopLossHit && !stopLossWarning && open && (
+          <div style={{ marginTop: 4, fontSize: 11, color: "#94a3b8" }}>
+            Stop-loss rule: close if loss exceeds {money(stopLossAt)}
+            {unrealizedPnl != null && (
+              <span style={{ marginLeft: 8, color: unrealizedPnl >= 0 ? "#16a34a" : "#f97316" }}>
+                · current P&L: {unrealizedPnl >= 0 ? "+" : ""}{money(unrealizedPnl)}
+              </span>
+            )}
+          </div>
+        )}
         {status && (
           <div style={{
             marginTop: 6, fontSize: 12, fontWeight: 600,
@@ -2012,6 +2074,8 @@ function OpportunityCard({ pick, capital, onLoad }) {
         </>}
         <div style={{ color: "#64748b" }}>Uses from account</div>
         <div style={{ color: "#0f172a" }}>{money(collateralUsed)}</div>
+        <div style={{ color: "#64748b" }}>Close if loss hits</div>
+        <div style={{ fontWeight: 700, color: "#e14c4c" }}>{money(earn * 2)}</div>
       </div>
 
       {/* Earnings warning — only shown when earnings confirmed before expiration */}
