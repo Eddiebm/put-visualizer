@@ -202,24 +202,54 @@ function buildTourSteps(ticker, inputs, model) {
 // labels these clearly as approximate so they're never mistaken for live data.
 const SNAPSHOT_DATE = "Jun 27, 2026";
 const COMPANIES = [
-  { ticker: "AAPL", name: "Apple", price: 284 },
-  { ticker: "MSFT", name: "Microsoft", price: 373 },
-  { ticker: "NVDA", name: "NVIDIA", price: 193 },
-  { ticker: "AMZN", name: "Amazon", price: 233 },
-  { ticker: "GOOGL", name: "Alphabet", price: 337 },
-  { ticker: "META", name: "Meta", price: 550 },
-  { ticker: "TSLA", name: "Tesla", price: 380 },
-  { ticker: "AMD", name: "AMD", price: 522 },
-  { ticker: "INTC", name: "Intel", price: 128 },
-  { ticker: "JPM", name: "JPMorgan", price: 329 },
-  { ticker: "BAC", name: "Bank of America", price: 58 },
-  { ticker: "DIS", name: "Disney", price: 99 },
-  { ticker: "KO", name: "Coca-Cola", price: 83 },
-  { ticker: "PFE", name: "Pfizer", price: 24 },
-  { ticker: "F", name: "Ford", price: 14 },
-  { ticker: "PLTR", name: "Palantir", price: 113 },
-  { ticker: "SOFI", name: "SoFi", price: 18 },
-  { ticker: "T", name: "AT&T", price: 23 },
+  // ETFs — deepest options liquidity, no earnings risk
+  { ticker: "SPY",  name: "S&P 500 ETF",       price: 580 },
+  { ticker: "QQQ",  name: "Nasdaq 100 ETF",     price: 490 },
+  { ticker: "IWM",  name: "Russell 2000 ETF",   price: 210 },
+  { ticker: "GLD",  name: "Gold ETF",           price: 315 },
+  { ticker: "EEM",  name: "Emerging Markets ETF", price: 42 },
+  { ticker: "XLE",  name: "Energy Sector ETF",  price: 90 },
+  { ticker: "XLF",  name: "Financials ETF",     price: 50 },
+  // Big Tech
+  { ticker: "AAPL", name: "Apple",              price: 284 },
+  { ticker: "MSFT", name: "Microsoft",          price: 373 },
+  { ticker: "NVDA", name: "NVIDIA",             price: 193 },
+  { ticker: "AMZN", name: "Amazon",             price: 233 },
+  { ticker: "GOOGL", name: "Alphabet",          price: 337 },
+  { ticker: "META", name: "Meta",               price: 550 },
+  { ticker: "NFLX", name: "Netflix",            price: 1250 },
+  { ticker: "CRM",  name: "Salesforce",         price: 320 },
+  // Growth / High Vol
+  { ticker: "TSLA", name: "Tesla",              price: 380 },
+  { ticker: "AMD",  name: "AMD",                price: 170 },
+  { ticker: "PLTR", name: "Palantir",           price: 113 },
+  { ticker: "COIN", name: "Coinbase",           price: 280 },
+  { ticker: "UBER", name: "Uber",               price: 90 },
+  { ticker: "PYPL", name: "PayPal",             price: 75 },
+  { ticker: "SNAP", name: "Snap",               price: 12 },
+  // Value / Income
+  { ticker: "JPM",  name: "JPMorgan",           price: 329 },
+  { ticker: "BAC",  name: "Bank of America",    price: 48 },
+  { ticker: "GS",   name: "Goldman Sachs",      price: 650 },
+  { ticker: "WFC",  name: "Wells Fargo",        price: 78 },
+  { ticker: "KO",   name: "Coca-Cola",          price: 83 },
+  { ticker: "MCD",  name: "McDonald's",         price: 325 },
+  { ticker: "WMT",  name: "Walmart",            price: 98 },
+  { ticker: "HD",   name: "Home Depot",         price: 410 },
+  { ticker: "NKE",  name: "Nike",               price: 62 },
+  // Energy
+  { ticker: "XOM",  name: "ExxonMobil",         price: 118 },
+  { ticker: "CVX",  name: "Chevron",            price: 155 },
+  // Healthcare
+  { ticker: "JNJ",  name: "Johnson & Johnson",  price: 165 },
+  { ticker: "UNH",  name: "UnitedHealth",       price: 310 },
+  { ticker: "PFE",  name: "Pfizer",             price: 24 },
+  { ticker: "MRNA", name: "Moderna",            price: 38 },
+  // Speculative / Small
+  { ticker: "F",    name: "Ford",               price: 14 },
+  { ticker: "SOFI", name: "SoFi",               price: 18 },
+  { ticker: "T",    name: "AT&T",               price: 23 },
+  { ticker: "INTC", name: "Intel",              price: 22 },
 ];
 
 const MODES = [
@@ -1690,6 +1720,12 @@ function TodayView({ capital, onLoadTrade, onPicksReady }) {
 
   async function runScan() {
     setLoading(true);
+
+    // One Finnhub call for all stocks — avoids per-stock rate limit hits
+    const earningsBulk = await fetch(`/api/earnings?expiration=${exp}`)
+      .then(r => r.ok ? r.json() : null).catch(() => null);
+    const earningsMap = earningsBulk?.earningsMap ?? null;
+
     const results = await Promise.all(
       COMPANIES.map(async (company) => {
         const sym = company.ticker;
@@ -1705,17 +1741,14 @@ function TodayView({ capital, onLoadTrade, onPicksReady }) {
         const rvol = (histData?.available && histData.closes?.length >= 3)
           ? calcRealizedVol(histData.closes, 30) : null;
 
-        const [optData, earningsData] = await Promise.all([
-          fetch(`/api/option?symbol=${sym}&expiration=${exp}&strike=${strike}`)
-            .then(r => r.ok ? r.json() : null).catch(() => null),
-          fetch(`/api/earnings?symbol=${sym}&expiration=${exp}`)
-            .then(r => r.ok ? r.json() : null).catch(() => null),
-        ]);
+        const optData = await fetch(`/api/option?symbol=${sym}&expiration=${exp}&strike=${strike}`)
+          .then(r => r.ok ? r.json() : null).catch(() => null);
 
         if (!optData?.available || !(optData.premium > 0)) return base;
 
-        const hasEarnings = earningsData?.available ? (earningsData.hasEarnings ?? null) : null;
-        const earningsDate = earningsData?.date ?? null;
+        const earningsEntry = earningsMap ? (earningsMap[sym] ?? { hasEarnings: false }) : null;
+        const hasEarnings = earningsEntry ? earningsEntry.hasEarnings : null;
+        const earningsDate = earningsEntry?.date ?? null;
         const { premium, iv, delta: mktDelta } = optData;
         const richness = (iv > 0 && rvol > 0) ? richnessSignal(iv, rvol) : null;
 
