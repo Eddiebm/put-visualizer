@@ -1,5 +1,5 @@
 import React, { useMemo, useState, useEffect, useRef } from "react";
-import { normCdf, lnDensity, bsGreeks, solveIv, realizedVol as calcRealizedVol } from "./lib/blackScholes.js";
+import { normCdf, lnDensity, bsPrice, bsGreeks, solveIv, realizedVol as calcRealizedVol } from "./lib/blackScholes.js";
 import { popFromDelta, expectedMove, cushionSigma, popPlain, cushionPlain } from "./lib/probability.js";
 import { richnessSignal } from "./lib/richness.js";
 
@@ -246,6 +246,27 @@ function defaultExpiration() {
   return d.toISOString().slice(0, 10);
 }
 
+// Nearest Friday at least `targetDays` out — for daily picks (~30 DTE sweet spot).
+function targetExpiration(targetDays = 30) {
+  const d = new Date();
+  d.setDate(d.getDate() + targetDays);
+  const toFri = (5 - d.getDay() + 7) % 7;
+  d.setDate(d.getDate() + toFri);
+  return d.toISOString().slice(0, 10);
+}
+
+function computeDte(iso) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return 30;
+  return Math.max(1, Math.round((new Date(iso + "T12:00:00Z") - Date.now()) / 86400000));
+}
+
+// Spread width based on price tier (standard option strike increments)
+function spreadWidthFor(price) {
+  if (price < 20) return 1;
+  if (price < 50) return 2.5;
+  return 5;
+}
+
 const DEFAULTS = {
   mode: "put",
   strike: 50,
@@ -326,6 +347,7 @@ export default function App() {
   });
   const [rvol, setRvol] = useState(null);      // realized vol from 30d price history
   const [delta, setDelta] = useState(null);    // from Alpaca option snapshot
+  const [tab, setTab] = useState("today");
   const appliedRef = useRef(null);
 
   function dismissTour() {
@@ -536,13 +558,74 @@ export default function App() {
       )}
       <div style={styles.shell}>
         <header style={styles.header}>
-          <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12, marginBottom: 6 }}>
-            <h1 style={{ ...styles.h1, margin: 0 }}>Options Income — Honest P&L</h1>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 14 }}>
+            <h1 style={{ ...styles.h1, margin: 0 }}>Options Income</h1>
             <button type="button" onClick={() => setTourStep(0)} style={styles.howBtn} title="How does this work?">
               How does this work?
             </button>
           </div>
-          <p style={styles.sub}>
+          <div style={{ display: "flex", gap: 4, borderBottom: "2px solid #e2e8f0", marginBottom: 0 }}>
+            {[
+              { key: "today", label: "Today's picks" },
+              { key: "calculator", label: "Calculator" },
+              { key: "compare", label: "Compare stocks" },
+            ].map(t => (
+              <button
+                key={t.key}
+                type="button"
+                onClick={() => setTab(t.key)}
+                style={{
+                  background: "none", border: "none", cursor: "pointer",
+                  padding: "8px 16px", fontSize: 13, fontWeight: tab === t.key ? 700 : 500,
+                  color: tab === t.key ? "#0f172a" : "#64748b",
+                  borderBottom: tab === t.key ? "2px solid #0f172a" : "2px solid transparent",
+                  marginBottom: -2,
+                }}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+        </header>
+
+        {tab === "today" && (
+          <DailyPicksView
+            capital={capital}
+            onLoadTrade={(pick) => {
+              setTab("calculator");
+              setInputs(s => ({
+                ...s,
+                mode: "spread",
+                strike: pick.strike,
+                premium: round2(pick.premium),
+                longStrike: pick.longStrikeVal,
+                longPremium: round2(pick.netCredit < pick.premium ? pick.premium - pick.netCredit : pick.premium * 0.4),
+                iv: pick.iv ?? null,
+              }));
+              selectCompany(pick.sym);
+              window.scrollTo({ top: 0, behavior: "smooth" });
+            }}
+          />
+        )}
+
+        {tab === "compare" && (
+          <Screener
+            expiration={expiration}
+            dropPct={dropPct}
+            capital={capital}
+            mode={mode}
+            onLoad={(sym, strike, prem) => {
+              setTicker(sym);
+              setInputs((s) => ({ ...s, strike, premium: prem, spot: strike }));
+              selectCompany(sym);
+              setTab("calculator");
+              window.scrollTo({ top: 0, behavior: "smooth" });
+            }}
+          />
+        )}
+
+        {tab === "calculator" && (<>
+        <p style={styles.sub}>
             {mode === "put" &&
               "The flat green ceiling is everything you can win. The red underneath is what a bad week costs. That gap is the whole story."}
             {mode === "spread" &&
@@ -552,7 +635,6 @@ export default function App() {
             {mode === "covered" &&
               "Own the shares, sell a call and a put against them. The upside is capped; the downside is doubled — you lose on the stock AND get assigned."}
           </p>
-        </header>
 
         <CompanyPicker
           ticker={ticker}
@@ -706,23 +788,10 @@ export default function App() {
         </section>
 
         <Journal journal={journal} onLog={logTrade} onClose={closeTrade} onDelete={deleteTrade} />
-
-        <Screener
-          expiration={expiration}
-          dropPct={dropPct}
-          capital={capital}
-          mode={mode}
-          onLoad={(sym, strike, prem) => {
-            setTicker(sym);
-            setInputs((s) => ({ ...s, strike, premium: prem, spot: strike }));
-            selectCompany(sym);
-            window.scrollTo({ top: 0, behavior: "smooth" });
-          }}
-        />
+        </>)}
 
         <footer style={styles.footer}>
-          Inputs are saved on this device — close it and your last setup is still here. Not advice;
-          the red is the part that matters.
+          Prices ~15-min delayed · for learning only, not live order entry · not financial advice · the red number is the part that matters
         </footer>
       </div>
     </div>
@@ -1545,6 +1614,224 @@ function Scenarios({ cards }) {
   );
 }
 
+function DailyPicksView({ capital, onLoadTrade }) {
+  const [picks, setPicks] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [lastRun, setLastRun] = useState(null);
+  const exp = useMemo(() => targetExpiration(30), []);
+  const dte = useMemo(() => computeDte(exp), [exp]);
+
+  useEffect(() => { runScan(); }, []);
+
+  async function runScan() {
+    setLoading(true);
+    const results = await Promise.all(
+      COMPANIES.map(async (company) => {
+        const sym = company.ticker;
+        const base = { sym, name: company.name, available: false };
+
+        const [quoteData, histData] = await Promise.all([
+          fetch(`/api/quote?symbol=${sym}`).then(r => r.ok ? r.json() : null).catch(() => null),
+          fetch(`/api/history?symbol=${sym}`).then(r => r.ok ? r.json() : null).catch(() => null),
+        ]);
+
+        const price = (quoteData?.price > 0) ? quoteData.price : company.price;
+        const strike = roundStrike(price);
+        const rvol = (histData?.available && histData.closes?.length >= 3)
+          ? calcRealizedVol(histData.closes, 30) : null;
+
+        const optData = await fetch(`/api/option?symbol=${sym}&expiration=${exp}&strike=${strike}`)
+          .then(r => r.ok ? r.json() : null).catch(() => null);
+
+        if (!optData?.available || !(optData.premium > 0)) return base;
+
+        const { premium, iv, delta: mktDelta } = optData;
+        const richness = (iv > 0 && rvol > 0) ? richnessSignal(iv, rvol) : null;
+
+        // Spread math — estimate long put premium from BS using the same IV
+        const sw = spreadWidthFor(price);
+        const longStrikeVal = Math.max(0.5, strike - sw);
+        const longPremEst = (iv > 0)
+          ? bsPrice(price, longStrikeVal, dte, 0.05, iv, "put")
+          : premium * 0.4;
+        const netCredit = Math.max(0.01, premium - longPremEst);
+        const collateral = sw * 100;
+        const maxLoss = collateral - netCredit * 100;
+        const canAfford = capital >= collateral;
+        const contracts = canAfford ? Math.floor(capital / collateral) : 0;
+
+        // POP: use market delta if available, fall back to BS
+        let pop = null;
+        const putDelta = mktDelta ?? (iv > 0 ? bsGreeks(price, strike, dte, 0.05, iv, "put").delta : null);
+        if (putDelta != null) pop = 1 - Math.abs(putDelta);
+
+        const expMove = expectedMove(price, iv || 0, dte);
+        const cSigma = cushionSigma(price, strike, expMove);
+        const annYield = (netCredit / sw) * (365 / dte) * 100;
+
+        return {
+          sym, name: company.name, price, strike, premium, iv, rvol, dte,
+          richness, pop, cushion: cSigma, annYield,
+          sw, longStrikeVal, netCredit, collateral, maxLoss, canAfford, contracts,
+          deltaSource: mktDelta != null ? "market" : iv > 0 ? "calculated" : null,
+          available: true,
+        };
+      })
+    );
+
+    const tagOrder = { rich: 3, fair: 2, cheap: 1 };
+    const sorted = results.sort((a, b) => {
+      if (!a.available && !b.available) return 0;
+      if (!a.available) return 1;
+      if (!b.available) return -1;
+      if (!a.canAfford && b.canAfford) return 1;
+      if (a.canAfford && !b.canAfford) return -1;
+      const as = tagOrder[a.richness?.tag] ?? 0;
+      const bs = tagOrder[b.richness?.tag] ?? 0;
+      if (as !== bs) return bs - as;
+      return (b.cushion || 0) - (a.cushion || 0);
+    });
+
+    setPicks(sorted);
+    setLastRun(new Date());
+    setLoading(false);
+  }
+
+  if (loading) {
+    return (
+      <div style={{ padding: "48px 0", textAlign: "center", color: "#64748b" }}>
+        <div style={{ fontSize: 28, marginBottom: 12 }}>🔍</div>
+        <div style={{ fontWeight: 600, marginBottom: 6 }}>Scanning {COMPANIES.length} stocks…</div>
+        <div style={{ fontSize: 13, color: "#94a3b8" }}>Checking live prices, option premiums, and 30-day price history for each one.</div>
+      </div>
+    );
+  }
+
+  const good = picks.filter(p => p.available && p.canAfford && p.richness?.tag === "rich");
+  const ok = picks.filter(p => p.available && p.canAfford && p.richness?.tag === "fair");
+  const bad = picks.filter(p => p.available && p.canAfford && p.richness?.tag === "cheap");
+  const noData = picks.filter(p => !p.available || !p.canAfford);
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20, flexWrap: "wrap", gap: 8 }}>
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 18, color: "#0f172a" }}>
+            {good.length > 0 ? `${good.length} stock${good.length > 1 ? "s" : ""} worth looking at today` : "Nothing great today — see what's close"}
+          </div>
+          <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 2 }}>
+            ~{dte}-day spreads · {exp} expiry{lastRun ? ` · scanned ${lastRun.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : ""}
+          </div>
+        </div>
+        <button type="button" onClick={runScan} style={{ ...styles.tourNext, fontSize: 12, padding: "8px 16px" }}>
+          Rescan ↺
+        </button>
+      </div>
+
+      {good.length > 0 && (
+        <div style={{ marginBottom: 24 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: "#16a34a", letterSpacing: "0.07em", textTransform: "uppercase", marginBottom: 10 }}>
+            ✅ Good time to sell
+          </div>
+          <div style={styles.picksGrid}>
+            {good.map(p => <PickCard key={p.sym} pick={p} capital={capital} onLoad={onLoadTrade} />)}
+          </div>
+        </div>
+      )}
+
+      {ok.length > 0 && (
+        <div style={{ marginBottom: 24 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: "#d97706", letterSpacing: "0.07em", textTransform: "uppercase", marginBottom: 10 }}>
+            🟡 About average — fine to trade
+          </div>
+          <div style={styles.picksGrid}>
+            {ok.map(p => <PickCard key={p.sym} pick={p} capital={capital} onLoad={onLoadTrade} />)}
+          </div>
+        </div>
+      )}
+
+      {bad.length > 0 && (
+        <div style={{ marginBottom: 24 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: "#e14c4c", letterSpacing: "0.07em", textTransform: "uppercase", marginBottom: 10 }}>
+            ⚠️ Probably not worth selling right now
+          </div>
+          <div style={styles.picksGrid}>
+            {bad.map(p => <PickCard key={p.sym} pick={p} capital={capital} onLoad={onLoadTrade} />)}
+          </div>
+        </div>
+      )}
+
+      {noData.length > 0 && (
+        <details style={{ marginTop: 8 }}>
+          <summary style={{ fontSize: 12, color: "#94a3b8", cursor: "pointer" }}>
+            {noData.length} stock{noData.length > 1 ? "s" : ""} with no live data or out of budget
+          </summary>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 8 }}>
+            {noData.map(p => (
+              <span key={p.sym} style={{ fontSize: 12, color: "#94a3b8", background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 6, padding: "4px 10px" }}>
+                {p.sym} {!p.canAfford ? `· needs $${p.collateral}` : "· no option data"}
+              </span>
+            ))}
+          </div>
+        </details>
+      )}
+
+      <p style={{ fontSize: 11.5, color: "#94a3b8", marginTop: 20, lineHeight: 1.6 }}>
+        "Good time to sell" means the market is pricing in more fear than this stock has actually shown recently — that gap is extra premium in your pocket. It is not a prediction. Always size for the worst case, not the premium you want to collect.
+      </p>
+    </div>
+  );
+}
+
+function PickCard({ pick, capital, onLoad }) {
+  const { sym, name, price, strike, netCredit, collateral, maxLoss, contracts, richness, pop, cushion, dte, sw, longStrikeVal, annYield } = pick;
+  const tagColor = richness?.tag === "rich" ? "#16a34a" : richness?.tag === "cheap" ? "#e14c4c" : "#d97706";
+  const earn = Math.round(netCredit * 100 * contracts);
+  const lose = Math.round(maxLoss * contracts);
+  const popN = pop != null ? Math.round(pop * 100) : null;
+
+  return (
+    <div style={{ border: `1.5px solid ${tagColor}22`, borderRadius: 12, background: "#fff", padding: "16px 18px", display: "flex", flexDirection: "column", gap: 10 }}>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8 }}>
+        <div>
+          <span style={{ fontWeight: 800, fontSize: 16, color: "#0f172a" }}>{sym}</span>
+          <span style={{ fontSize: 12, color: "#94a3b8", marginLeft: 6 }}>{name}</span>
+        </div>
+        <span style={{ fontSize: 11, fontWeight: 700, color: tagColor, background: `${tagColor}15`, borderRadius: 20, padding: "3px 10px", whiteSpace: "nowrap" }}>
+          {richness?.tag === "rich" ? "Worth selling" : richness?.tag === "fair" ? "About average" : "Thin premium"}
+        </span>
+      </div>
+
+      <div style={{ fontSize: 13, color: "#0f172a", lineHeight: 1.5 }}>
+        {richness?.headline}
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "6px 16px", fontSize: 12 }}>
+        <div style={{ color: "#64748b" }}>You collect</div>
+        <div style={{ fontWeight: 700, color: "#16a34a" }}>+{money(earn)}{contracts > 1 ? ` (${contracts}×)` : ""}</div>
+        <div style={{ color: "#64748b" }}>Worst case</div>
+        <div style={{ fontWeight: 700, color: "#e14c4c" }}>−{money(lose)}</div>
+        <div style={{ color: "#64748b" }}>Collateral held</div>
+        <div style={{ color: "#475569" }}>{money(collateral * contracts)}</div>
+        {popN != null && <><div style={{ color: "#64748b" }}>Odds of winning</div><div style={{ color: "#475569" }}>{popN} in 100</div></>}
+        {cushion != null && <><div style={{ color: "#64748b" }}>Your buffer</div><div style={{ color: "#475569" }}>{cushion.toFixed(1)}× normal range</div></>}
+      </div>
+
+      <div style={{ fontSize: 11.5, color: "#94a3b8", borderTop: "1px solid #f1f5f9", paddingTop: 8 }}>
+        Sell {strike}P · Buy {money2(longStrikeVal)}P · {sw}-pt spread · {dte} days · {money2(price)} now
+      </div>
+
+      <button
+        type="button"
+        onClick={() => onLoad(pick)}
+        style={{ ...styles.tourNext, fontSize: 12, padding: "9px 0", width: "100%", marginTop: 2 }}
+      >
+        Load this trade in calculator →
+      </button>
+    </div>
+  );
+}
+
 function Screener({ expiration, dropPct, capital, mode, onLoad }) {
   const [selected, setSelected] = useState([]);
   const [exp, setExp] = useState(expiration);
@@ -1958,6 +2245,7 @@ const styles = {
   deleteBtn: { border: "none", background: "transparent", color: "#cbd5e1", fontSize: 14, cursor: "pointer", padding: "4px 6px", lineHeight: 1 },
   howBtn: { border: "1px solid #e2e8f0", borderRadius: 8, background: "#f8fafc", color: "#475569", fontSize: 12, fontWeight: 600, padding: "6px 12px", cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0 },
   screener: { marginTop: 28, paddingTop: 22, borderTop: "1px solid #eef2f7" },
+  picksGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 14 },
   chipGrid: { display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 16 },
   chip: { border: "1px solid #e2e8f0", borderRadius: 8, fontSize: 12, fontWeight: 700, padding: "5px 10px", cursor: "pointer", letterSpacing: "0.02em" },
   screenerTable: { width: "100%", borderCollapse: "collapse", fontSize: 13 },
