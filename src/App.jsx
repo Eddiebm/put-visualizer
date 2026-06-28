@@ -350,6 +350,7 @@ export default function App() {
   const [delta, setDelta] = useState(null);    // from Alpaca option snapshot
   const [tab, setTab] = useState("today");
   const [aiContext, setAiContext] = useState({ picks: [], marketCondition: null });
+  const [scanStats, setScanStats] = useState({ totalScanned: 0, qualified: 0, condition: null });
   const appliedRef = useRef(null);
 
   function dismissTour() {
@@ -571,6 +572,7 @@ export default function App() {
               { key: "today", label: "Today's picks" },
               { key: "calculator", label: "Calculator" },
               { key: "compare", label: "Compare stocks" },
+              { key: "review", label: "Review" },
             ].map(t => (
               <button
                 key={t.key}
@@ -593,7 +595,10 @@ export default function App() {
         {tab === "today" && (
           <TodayView
             capital={capital}
-            onPicksReady={(ctx) => setAiContext({ picks: ctx.picks, marketCondition: ctx.condition, capital })}
+            onPicksReady={(ctx) => {
+              setAiContext({ picks: ctx.picks, marketCondition: ctx.condition, capital });
+              setScanStats({ totalScanned: ctx.totalScanned, qualified: ctx.qualified, condition: ctx.condition });
+            }}
             onLoadTrade={(pick) => {
               setTab("calculator");
               setInputs(s => ({
@@ -625,6 +630,10 @@ export default function App() {
               window.scrollTo({ top: 0, behavior: "smooth" });
             }}
           />
+        )}
+
+        {tab === "review" && (
+          <DayReview journal={journal} scanStats={scanStats} capital={capital} />
         )}
 
         {tab === "calculator" && (<>
@@ -1406,11 +1415,28 @@ function Ticket({ mode, ticker, expiration, putStrike, putPrem, longStrike, long
 
   function copy() {
     try {
-      navigator.clipboard?.writeText(order + "\n(" + tag + ")");
+      const credit = mode === "spread" ? ((putPrem || 0) - (longPrem || 0)) : (putPrem || 0);
+      const maxGain = Math.round(credit * 100 * qty);
+      const maxLossAmt = mode === "spread"
+        ? Math.round(((putStrike || 0) - (longStrike || 0) - credit) * 100 * qty)
+        : null;
+      const lines = [
+        "─── TRADE ORDER ───────────────────────────",
+        ...legs,
+        "",
+        `Net credit:  ${money2(credit)}/share = ${money(maxGain)} collected`,
+        maxLossAmt != null ? `Max loss:    ${money(maxLossAmt)} (worst case, spread expires at max loss)` : null,
+        `Collateral:  ${money(collateral)} held by broker`,
+        `Expiration:  ${exp}`,
+        "",
+        `(${tag})`,
+        "────────────────────────────────────────────",
+      ].filter(Boolean).join("\n");
+      navigator.clipboard?.writeText(lines);
       setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
+      setTimeout(() => setCopied(false), 2000);
     } catch {
-      /* clipboard blocked — text is on screen to copy by hand */
+      /* clipboard blocked — text is on screen */
     }
   }
 
@@ -1510,8 +1536,30 @@ function Journal({ journal, onLog, onClose, onDelete }) {
 
 function JournalRow({ e, onClose, onDelete }) {
   const [px, setPx] = useState("");
+  const [currentPrice, setCurrentPrice] = useState(null);
   const open = e.status === "open";
   const loss = e.status === "closed" && e.realizedPnl < 0;
+
+  useEffect(() => {
+    if (!open || !e.ticker) return;
+    fetch(`/api/quote?symbol=${encodeURIComponent(e.ticker)}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d?.price > 0) setCurrentPrice(d.price); })
+      .catch(() => {});
+  }, [open, e.ticker]);
+
+  function monitorStatus() {
+    if (!currentPrice || !e.putStrike) return null;
+    const strike = e.putStrike;
+    const pctAbove = (currentPrice - strike) / strike;
+    if (pctAbove >= 0.15) return { text: "Nothing to do — well above your strike", color: "#16a34a", bg: "#f0fdf4" };
+    if (pctAbove >= 0.07) return { text: "Healthy — worth a weekly check", color: "#22c55e", bg: "#f7fdf9" };
+    if (pctAbove >= 0.03) return { text: "Watch closely — getting near your zone", color: "#d97706", bg: "#fffbeb" };
+    if (pctAbove >= 0)    return { text: "Near risk zone — consider closing now", color: "#f97316", bg: "#fff7ed" };
+    return { text: "Below your strike — exit immediately", color: "#e14c4c", bg: "#fff5f5" };
+  }
+
+  const status = open ? monitorStatus() : null;
 
   return (
     <div style={styles.journalRow}>
@@ -1523,6 +1571,16 @@ function JournalRow({ e, onClose, onDelete }) {
           opened {e.openedAt} · exp {e.expiration} · collected {money(e.credit)}
           {e.status === "closed" && ` · closed ${e.closedAt} @ ${money2(e.closePrice)}`}
         </div>
+        {status && (
+          <div style={{
+            marginTop: 6, fontSize: 12, fontWeight: 600,
+            color: status.color, background: status.bg,
+            borderRadius: 6, padding: "4px 8px", display: "inline-block",
+          }}>
+            {status.text}
+            {currentPrice && <span style={{ fontWeight: 400, marginLeft: 6, color: "#64748b" }}>({e.ticker} at {money2(currentPrice)})</span>}
+          </div>
+        )}
       </div>
 
       {open ? (
@@ -1695,13 +1753,14 @@ function TodayView({ capital, onLoadTrade, onPicksReady }) {
     );
 
     const affordable = results.filter(p => p.available && p.canAfford).sort((a, b) => b.score - a.score);
+    const qualified = affordable.filter(p => p.score >= 50);
     const cond = computeMarketCondition(affordable.map(p => p.richness?.tag).filter(Boolean));
-    const top = affordable.slice(0, 3);
+    const top = qualified.slice(0, 3);
 
     setPicks(top);
     setCondition(cond);
     setLastRun(new Date());
-    onPicksReady?.({ picks: top, condition: cond });
+    onPicksReady?.({ picks: top, condition: cond, totalScanned: COMPANIES.length, qualified: qualified.length });
     setLoading(false);
   }
 
@@ -1827,13 +1886,8 @@ function OpportunityCard({ pick, capital, onLoad }) {
           <div style={{ fontSize: 11, fontWeight: 700, color: "#16a34a", letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 8 }}>
             Why I like this trade
           </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-            {positives.map(c => (
-              <div key={c.key} style={{ fontSize: 13, color: "#0f172a", display: "flex", gap: 7, alignItems: "flex-start" }}>
-                <span style={{ color: "#16a34a", marginTop: 1, flexShrink: 0 }}>✓</span>
-                <span>{c.label}</span>
-              </div>
-            ))}
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {positives.map(c => <ExplainCheckItem key={c.key} check={c} accent="#16a34a" icon="✓" text={c.label} />)}
           </div>
         </div>
       )}
@@ -1844,13 +1898,8 @@ function OpportunityCard({ pick, capital, onLoad }) {
           <div style={{ fontSize: 11, fontWeight: 700, color: "#d97706", letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 8 }}>
             Worth knowing
           </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-            {negatives.map(c => (
-              <div key={c.key} style={{ fontSize: 13, color: "#92400e", display: "flex", gap: 7, alignItems: "flex-start" }}>
-                <span style={{ marginTop: 1, flexShrink: 0 }}>•</span>
-                <span>{c.warnLabel || c.fail}</span>
-              </div>
-            ))}
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {negatives.map(c => <ExplainCheckItem key={c.key} check={c} accent="#d97706" icon="•" text={c.warnLabel || c.fail} />)}
           </div>
         </div>
       )}
@@ -2052,6 +2101,190 @@ function AiAssistant({ context }) {
       >
         {open ? "×" : "💬"}
       </button>
+    </div>
+  );
+}
+
+// ─── Explain Check Item ───────────────────────────────────────────────────────
+
+function ExplainCheckItem({ check, accent, icon, text }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 7, alignItems: "flex-start" }}>
+        <span style={{ color: accent, marginTop: 1, flexShrink: 0, fontSize: 13 }}>{icon}</span>
+        <span style={{ fontSize: 13, color: "#0f172a", flex: 1 }}>{text}</span>
+        {check.detail && (
+          <button
+            type="button"
+            onClick={() => setOpen(o => !o)}
+            style={{
+              flexShrink: 0, background: "none", border: "1px solid #e2e8f0",
+              borderRadius: 20, fontSize: 10, fontWeight: 700, color: "#64748b",
+              padding: "1px 7px", cursor: "pointer", letterSpacing: "0.03em",
+            }}
+          >
+            {open ? "Less" : "Explain"}
+          </button>
+        )}
+      </div>
+      {open && check.detail && (
+        <div style={{
+          marginTop: 6, marginLeft: 20, fontSize: 12, color: "#475569",
+          background: "#f8fafc", borderRadius: 8, padding: "8px 12px", lineHeight: 1.6,
+        }}>
+          {check.detail}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Day Review ───────────────────────────────────────────────────────────────
+
+function DayReview({ journal, scanStats, capital }) {
+  const todayStr = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  const todayTrades = journal.filter(e => e.openedAt === todayStr);
+  const todayClosed = todayTrades.filter(e => e.status === "closed");
+  const todayOpen = todayTrades.filter(e => e.status === "open");
+  const todayWins = todayClosed.filter(e => e.realizedPnl >= 0);
+  const todayPnl = todayClosed.reduce((s, e) => s + e.realizedPnl, 0);
+
+  const { totalScanned = 0, qualified = 0, condition } = scanStats;
+
+  // Discipline score
+  let disciplineScore = 100;
+  let disciplineNote = "";
+  const maxSuggestedTrades = Math.min(qualified, 3);
+
+  if (condition?.label?.includes("No edge") && todayTrades.length > 0) {
+    disciplineScore = 30;
+    disciplineNote = "You traded when conditions were red. The system said to wait.";
+  } else if (todayTrades.length === 0 && condition?.label?.includes("Good")) {
+    disciplineScore = 85;
+    disciplineNote = "You passed on a green day. Caution is valid — but good setups don't always come back.";
+  } else if (todayTrades.length === 0) {
+    disciplineScore = 100;
+    disciplineNote = "You sat out. Cash is a position. When conditions aren't right, not trading IS the right trade.";
+  } else if (todayTrades.length <= maxSuggestedTrades) {
+    disciplineScore = 100;
+    disciplineNote = "You stayed within the system's recommendations. That's the discipline.";
+  } else {
+    disciplineScore = Math.max(40, 100 - (todayTrades.length - maxSuggestedTrades) * 20);
+    disciplineNote = `You took ${todayTrades.length} trades — the system suggested at most ${maxSuggestedTrades}. More trades means more risk, not more edge.`;
+  }
+
+  const dsColor = disciplineScore >= 90 ? "#16a34a" : disciplineScore >= 70 ? "#d97706" : "#e14c4c";
+
+  return (
+    <div style={{ paddingTop: 8 }}>
+      <div style={{ fontWeight: 700, fontSize: 17, color: "#0f172a", marginBottom: 18 }}>
+        Today's review
+      </div>
+
+      {/* Market activity summary */}
+      <div style={{
+        display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))",
+        gap: 12, marginBottom: 24,
+      }}>
+        {[
+          { label: "Stocks scanned", value: totalScanned || "—" },
+          { label: "Met the bar", value: qualified || "—", note: "score ≥ 50" },
+          { label: "Shown to you", value: Math.min(qualified, 3) || "—", note: "top 3 max" },
+          { label: "Trades logged today", value: todayTrades.length },
+        ].map(s => (
+          <div key={s.label} style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 10, padding: "14px 16px" }}>
+            <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>{s.label}</div>
+            <div style={{ fontSize: 26, fontWeight: 800, color: "#0f172a", lineHeight: 1 }}>{s.value}</div>
+            {s.note && <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 3 }}>{s.note}</div>}
+          </div>
+        ))}
+      </div>
+
+      {/* Discipline score */}
+      <div style={{
+        background: dsColor + "10", border: `1.5px solid ${dsColor}30`,
+        borderRadius: 12, padding: "18px 20px", marginBottom: 24,
+        display: "flex", alignItems: "center", gap: 20, flexWrap: "wrap",
+      }}>
+        <div style={{ textAlign: "center", minWidth: 70 }}>
+          <div style={{ fontSize: 40, fontWeight: 800, color: dsColor, lineHeight: 1 }}>{disciplineScore}</div>
+          <div style={{ fontSize: 11, fontWeight: 700, color: dsColor, textTransform: "uppercase", letterSpacing: "0.06em", marginTop: 2 }}>Discipline</div>
+        </div>
+        <div style={{ flex: 1, minWidth: 180 }}>
+          <div style={{ fontSize: 14, fontWeight: 600, color: "#0f172a", marginBottom: 4 }}>
+            {disciplineScore === 100 ? "Excellent." : disciplineScore >= 85 ? "Good." : disciplineScore >= 70 ? "Be careful." : "High risk."}
+          </div>
+          <div style={{ fontSize: 13, color: "#475569", lineHeight: 1.5 }}>{disciplineNote}</div>
+        </div>
+      </div>
+
+      {/* Today's P&L */}
+      {todayClosed.length > 0 && (
+        <div style={{ marginBottom: 24 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: "#64748b", letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 10 }}>
+            Today's closed trades
+          </div>
+          <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+            <div style={{ background: "#f8fafc", borderRadius: 10, padding: "12px 18px", border: "1px solid #e2e8f0" }}>
+              <div style={{ fontSize: 11, color: "#64748b" }}>P&L today</div>
+              <div style={{ fontSize: 22, fontWeight: 800, color: todayPnl >= 0 ? "#16a34a" : "#e14c4c" }}>
+                {todayPnl >= 0 ? "+" : ""}{money(todayPnl)}
+              </div>
+            </div>
+            <div style={{ background: "#f8fafc", borderRadius: 10, padding: "12px 18px", border: "1px solid #e2e8f0" }}>
+              <div style={{ fontSize: 11, color: "#64748b" }}>Win rate today</div>
+              <div style={{ fontSize: 22, fontWeight: 800, color: "#0f172a" }}>
+                {todayClosed.length > 0 ? `${Math.round(todayWins.length / todayClosed.length * 100)}%` : "—"}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Open positions */}
+      {todayOpen.length > 0 && (
+        <div style={{ marginBottom: 24 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: "#64748b", letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 10 }}>
+            Open positions (logged today)
+          </div>
+          <div style={{ fontSize: 13, color: "#475569" }}>
+            {todayOpen.map(e => e.ticker).join(", ")} — check the Calculator tab to monitor.
+          </div>
+        </div>
+      )}
+
+      {todayTrades.length === 0 && journal.length === 0 && (
+        <div style={{ textAlign: "center", padding: "32px", color: "#94a3b8", fontSize: 14 }}>
+          No trades logged yet. Use "Log current trade" in the Calculator tab to start tracking.
+        </div>
+      )}
+
+      {/* All-time stats */}
+      {journal.filter(e => e.status === "closed").length > 0 && (
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: "#64748b", letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 10 }}>
+            All-time record
+          </div>
+          <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+            {(() => {
+              const closed = journal.filter(e => e.status === "closed");
+              const wins = closed.filter(e => e.realizedPnl >= 0);
+              const total = closed.reduce((s, e) => s + e.realizedPnl, 0);
+              return [
+                { label: "Total trades", value: closed.length },
+                { label: "Win rate", value: `${Math.round(wins.length / closed.length * 100)}%` },
+                { label: "Total P&L", value: moneySigned(total), color: total >= 0 ? "#16a34a" : "#e14c4c" },
+              ].map(s => (
+                <div key={s.label} style={{ background: "#f8fafc", borderRadius: 10, padding: "12px 18px", border: "1px solid #e2e8f0" }}>
+                  <div style={{ fontSize: 11, color: "#64748b" }}>{s.label}</div>
+                  <div style={{ fontSize: 20, fontWeight: 800, color: s.color || "#0f172a" }}>{s.value}</div>
+                </div>
+              ));
+            })()}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
