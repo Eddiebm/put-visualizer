@@ -1705,11 +1705,17 @@ function TodayView({ capital, onLoadTrade, onPicksReady }) {
         const rvol = (histData?.available && histData.closes?.length >= 3)
           ? calcRealizedVol(histData.closes, 30) : null;
 
-        const optData = await fetch(`/api/option?symbol=${sym}&expiration=${exp}&strike=${strike}`)
-          .then(r => r.ok ? r.json() : null).catch(() => null);
+        const [optData, earningsData] = await Promise.all([
+          fetch(`/api/option?symbol=${sym}&expiration=${exp}&strike=${strike}`)
+            .then(r => r.ok ? r.json() : null).catch(() => null),
+          fetch(`/api/earnings?symbol=${sym}&expiration=${exp}`)
+            .then(r => r.ok ? r.json() : null).catch(() => null),
+        ]);
 
         if (!optData?.available || !(optData.premium > 0)) return base;
 
+        const hasEarnings = earningsData?.available ? (earningsData.hasEarnings ?? null) : null;
+        const earningsDate = earningsData?.date ?? null;
         const { premium, iv, delta: mktDelta } = optData;
         const richness = (iv > 0 && rvol > 0) ? richnessSignal(iv, rvol) : null;
 
@@ -1733,14 +1739,14 @@ function TodayView({ capital, onLoadTrade, onPicksReady }) {
         const capitalPct = collateral / capital;
         const maxLossPct = maxLoss / capital;
 
-        const score = opportunityScore({ richness, pop, cushion: cSigma, canAfford, capitalPct, annYield, maxLossPct });
+        const score = opportunityScore({ richness, pop, cushion: cSigma, canAfford, capitalPct, annYield, maxLossPct, hasEarnings });
         const grade = scoreGrade(score);
 
         return {
           sym, name: company.name, price, strike, premium, iv, rvol, dte,
           richness, pop, cushion: cSigma, annYield, score, grade,
           sw, longStrikeVal, netCredit, collateral, maxLoss, canAfford, contracts,
-          capitalPct, maxLossPct,
+          capitalPct, maxLossPct, hasEarnings, earningsDate,
           earn: Math.round(netCredit * 100 * contracts),
           lose: Math.round(maxLoss * contracts),
           collateralUsed: collateral * contracts,
@@ -1847,10 +1853,10 @@ function OpportunityCard({ pick, capital, onLoad }) {
   const [showAll, setShowAll] = useState(false);
   const { sym, name, price, strike, sw, longStrikeVal, dte, score, grade,
           earn, lose, collateralUsed, pop, cushion, richness,
-          canAfford, capitalPct, maxLossPct } = pick;
+          canAfford, capitalPct, maxLossPct, hasEarnings, earningsDate } = pick;
   const popN = pop != null ? Math.round(pop * 100) : null;
 
-  const checks = autopilotChecks({ richness, pop, canAfford, maxLossPct, cushion, capitalPct });
+  const checks = autopilotChecks({ richness, pop, canAfford, maxLossPct, cushion, capitalPct, hasEarnings, earningsDate });
   const passing = checks.filter(c => !c.manual && c.pass && !c.warn);
   const cautious = checks.filter(c => !c.manual && (c.warn || (!c.pass && c.warnLabel)));
   const failed = checks.filter(c => !c.manual && !c.pass && !c.warn && !c.warnLabel);
@@ -1926,10 +1932,17 @@ function OpportunityCard({ pick, capital, onLoad }) {
         <div style={{ color: "#0f172a" }}>{money(collateralUsed)}</div>
       </div>
 
-      {/* Earnings reminder — always shown */}
-      <div style={{ fontSize: 12, color: "#92400e", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 8, padding: "8px 12px" }}>
-        ⚠ Check the earnings calendar before entering this trade — sudden announcements can override everything else.
-      </div>
+      {/* Earnings warning — only shown when earnings confirmed before expiration */}
+      {hasEarnings === true && (
+        <div style={{ fontSize: 12, color: "#991b1b", background: "#fff5f5", border: "1px solid #fecaca", borderRadius: 8, padding: "8px 12px", fontWeight: 600 }}>
+          ❌ Earnings before expiration{earningsDate ? ` (${earningsDate})` : ""} — do not sell premium through this announcement.
+        </div>
+      )}
+      {hasEarnings === null && (
+        <div style={{ fontSize: 12, color: "#92400e", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 8, padding: "8px 12px" }}>
+          ⚠ Earnings check unavailable — verify manually before entering.
+        </div>
+      )}
 
       {/* Autopilot checklist expand */}
       <button

@@ -1,8 +1,9 @@
 // Opportunity score — one number that drives whether the app shows a trade.
 // All inputs are already computed; this just weighs and sums them.
 
-export function opportunityScore({ richness, pop, cushion, canAfford, capitalPct, annYield, maxLossPct }) {
+export function opportunityScore({ richness, pop, cushion, canAfford, capitalPct, annYield, maxLossPct, hasEarnings }) {
   if (!canAfford) return 0;
+  if (hasEarnings === true) return 0; // earnings before expiration = automatic disqualification
 
   let score = 0;
 
@@ -46,7 +47,7 @@ export function scoreGrade(score) {
   return                  { label: "Avoid",     color: "#e14c4c", bg: "#fff5f5" };
 }
 
-export function autopilotChecks({ richness, pop, canAfford, maxLossPct, cushion, capitalPct }) {
+export function autopilotChecks({ richness, pop, canAfford, maxLossPct, cushion, capitalPct, hasEarnings, earningsDate }) {
   return [
     {
       key: "conditions",
@@ -108,12 +109,31 @@ export function autopilotChecks({ richness, pop, canAfford, maxLossPct, cushion,
       warnLabel: "Using a large portion of your account — be cautious.",
       fail: "This trade would use almost all of your account.",
     },
-    {
-      key: "earnings",
-      label: "No earnings before expiration",
-      detail: "Earnings announcements can cause sudden price swings that blow up option trades. Always check the earnings calendar before entering.",
-      manual: true,
-    },
+    hasEarnings === null
+      ? {
+          key: "earnings",
+          label: "No earnings before expiration",
+          detail: "Earnings announcements cause sudden price swings that blow up option trades. We're checking this automatically now.",
+          manual: true,
+        }
+      : hasEarnings
+      ? {
+          key: "earnings",
+          label: earningsDate
+            ? `Earnings on ${earningsDate} — before your expiration`
+            : "Earnings before expiration",
+          detail: "There is an earnings announcement before this option expires. That means the stock could gap up or down sharply, and your premium could disappear — or your loss could multiply. This is a serious risk.",
+          pass: false,
+          fail: earningsDate
+            ? `Earnings on ${earningsDate} — stock could gap sharply. Do not sell premium through earnings.`
+            : "Earnings before expiration — high risk of sudden price move.",
+        }
+      : {
+          key: "earnings",
+          label: "No earnings before expiration",
+          detail: "No earnings announcement is scheduled before this option expires. That removes one of the biggest sources of surprise risk for option sellers.",
+          pass: true,
+        },
   ];
 }
 
