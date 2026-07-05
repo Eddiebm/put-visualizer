@@ -1,5 +1,7 @@
 export const config = { runtime: "edge" };
 
+import { corsHeaders } from "./_cors.js";
+
 // Real put-option premium from Alpaca's options market data (indicative feed,
 // ~15-min delayed on the free tier). Given an underlying, an expiration date,
 // and a target strike, it returns the put whose strike is closest to the
@@ -8,6 +10,7 @@ export const config = { runtime: "edge" };
 // If no Alpaca key is configured it returns { available: false } so the client
 // can keep the premium as a manual input instead of surfacing an error.
 export default async function handler(req) {
+  const ch = corsHeaders(req);
   const { searchParams } = new URL(req.url);
   const symbol = (searchParams.get("symbol") || "").toUpperCase().replace(/[^A-Z.\-]/g, "");
   const expiration = (searchParams.get("expiration") || "").replace(/[^0-9\-]/g, "");
@@ -16,10 +19,10 @@ export default async function handler(req) {
   const id = process.env.ALPACA_KEY_ID;
   const secret = process.env.ALPACA_SECRET_KEY;
   if (!id || !secret) {
-    return json({ available: false, reason: "no_key" }, 200);
+    return json({ available: false, reason: "no_key" }, 200, ch);
   }
   if (!symbol || !/^\d{4}-\d{2}-\d{2}$/.test(expiration) || !Number.isFinite(targetStrike)) {
-    return json({ error: "symbol, expiration (YYYY-MM-DD) and strike are required" }, 400);
+    return json({ error: "symbol, expiration (YYYY-MM-DD) and strike are required" }, 400, ch);
   }
 
   try {
@@ -29,7 +32,7 @@ export default async function handler(req) {
     const r = await fetch(url, {
       headers: { "APCA-API-KEY-ID": id, "APCA-API-SECRET-KEY": secret },
     });
-    if (!r.ok) return json({ error: "options data unavailable", status: r.status }, 502);
+    if (!r.ok) return json({ error: "options data unavailable", status: r.status }, 502, ch);
 
     const data = await r.json();
     const snapshots = data?.snapshots || {};
@@ -42,7 +45,7 @@ export default async function handler(req) {
       if (!best || dist < best.dist) best = { occ, strike, snap, dist };
     }
 
-    if (!best) return json({ error: "no put contracts for that expiration" }, 404);
+    if (!best) return json({ error: "no put contracts for that expiration" }, 404, ch);
 
     const bid = best.snap?.latestQuote?.bp;
     const ask = best.snap?.latestQuote?.ap;
@@ -53,7 +56,7 @@ export default async function handler(req) {
     const premium = Number.isFinite(mid) ? mid : Number.isFinite(last) ? last : null;
 
     if (!Number.isFinite(premium) || premium <= 0) {
-      return json({ error: "no priced quote for the nearest contract" }, 404);
+      return json({ error: "no priced quote for the nearest contract" }, 404, ch);
     }
 
     const iv = best.snap?.impliedVolatility ?? best.snap?.greeks?.impliedVolatility ?? null;
@@ -75,10 +78,10 @@ export default async function handler(req) {
         source: "alpaca",
       },
       200,
-      { "cache-control": "s-maxage=120, stale-while-revalidate=300" }
+      { "cache-control": "s-maxage=120, stale-while-revalidate=300", ...ch }
     );
   } catch {
-    return json({ error: "options data unavailable" }, 502);
+    return json({ error: "options data unavailable" }, 502, ch);
   }
 }
 

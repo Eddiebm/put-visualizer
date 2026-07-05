@@ -1,5 +1,7 @@
 export const config = { runtime: "edge" };
 
+import { corsHeaders } from "./_cors.js";
+
 // ─── Symbol map — one Yahoo Finance batch call covers everything ──────────────
 const YF = {
   // International
@@ -68,6 +70,7 @@ const WATCHLIST = [
 ];
 
 export default async function handler(req) {
+  const ch      = corsHeaders(req);
   const today   = new Date().toISOString().slice(0, 10);
   const weekOut = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
 
@@ -80,6 +83,7 @@ export default async function handler(req) {
 
   return json({ markets, calendar, earnings, spyGap }, 200, {
     "cache-control": "s-maxage=300, stale-while-revalidate=600",
+    ...ch,
   });
 }
 

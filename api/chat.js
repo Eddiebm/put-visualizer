@@ -1,18 +1,33 @@
 export const config = { runtime: "edge" };
 
+import { corsHeaders } from "./_cors.js";
+
+const MAX_MESSAGES = 20;
+const MAX_MSG_CHARS = 2000;
+
 export default async function handler(req) {
+  const ch = corsHeaders(req);
   if (req.method !== "POST") {
-    return json({ error: "method_not_allowed" }, 405);
+    return json({ error: "method_not_allowed" }, 405, ch);
   }
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
-    return json({ available: false, reason: "no_key" }, 200);
+    return json({ available: false, reason: "no_key" }, 200, ch);
   }
 
   const { messages, context } = await req.json();
   if (!Array.isArray(messages) || messages.length === 0) {
-    return json({ error: "messages required" }, 400);
+    return json({ error: "messages required" }, 400, ch);
+  }
+  if (messages.length > MAX_MESSAGES) {
+    return json({ error: "too_many_messages" }, 400, ch);
+  }
+  const oversized = messages.find(
+    (m) => typeof m?.content === "string" && m.content.length > MAX_MSG_CHARS
+  );
+  if (oversized) {
+    return json({ error: "message_too_long" }, 400, ch);
   }
 
   const picksText = (context?.picks ?? [])
@@ -64,20 +79,20 @@ YOUR RULES — never break these:
     if (!r.ok) {
       const err = await r.text();
       console.error("Anthropic error", r.status, err);
-      return json({ error: "ai_unavailable" }, 502);
+      return json({ error: "ai_unavailable" }, 502, ch);
     }
 
     const data = await r.json();
     const reply = data?.content?.[0]?.text ?? "I couldn't process that. Please try again.";
-    return json({ reply });
+    return json({ reply }, 200, ch);
   } catch (e) {
-    return json({ error: "ai_unavailable" }, 502);
+    return json({ error: "ai_unavailable" }, 502, ch);
   }
 }
 
-function json(body, status = 200) {
+function json(body, status = 200, extra = {}) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...extra },
   });
 }

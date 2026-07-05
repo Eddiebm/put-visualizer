@@ -1,24 +1,27 @@
 export const config = { runtime: "edge" };
 
+import { corsHeaders } from "./_cors.js";
+
 // Live share price. Prefers Alpaca (IEX feed) when ALPACA_KEY_ID /
 // ALPACA_SECRET_KEY are set; otherwise falls back to Yahoo's keyless chart
 // endpoint. The client further falls back to a bundled snapshot if neither is
 // reachable (e.g. local `npm run dev`, which doesn't run this function).
 export default async function handler(req) {
+  const ch = corsHeaders(req);
   const { searchParams } = new URL(req.url);
   const symbol = (searchParams.get("symbol") || "")
     .toUpperCase()
     .replace(/[^A-Z.\-]/g, "");
 
-  if (!symbol) return json({ error: "symbol required" }, 400);
+  if (!symbol) return json({ error: "symbol required" }, 400, ch);
 
   const fromAlpaca = await alpacaQuote(symbol);
-  if (fromAlpaca) return json(fromAlpaca, 200, CACHE);
+  if (fromAlpaca) return json(fromAlpaca, 200, { ...CACHE, ...ch });
 
   const fromYahoo = await yahooQuote(symbol);
-  if (fromYahoo) return json(fromYahoo, 200, CACHE);
+  if (fromYahoo) return json(fromYahoo, 200, { ...CACHE, ...ch });
 
-  return json({ error: "quote unavailable" }, 502);
+  return json({ error: "quote unavailable" }, 502, ch);
 }
 
 async function alpacaQuote(symbol) {

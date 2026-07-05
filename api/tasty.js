@@ -1,9 +1,15 @@
 export const config = { runtime: "edge" };
 
+import { rejectOrigin, corsHeaders } from "./_cors.js";
+
 const BASE = "https://api.tastyworks.com";
 
 export default async function handler(req) {
-  if (req.method !== "POST") return json({ error: "method_not_allowed" }, 405);
+  if (req.method !== "POST") return json({ error: "method_not_allowed" }, 405, corsHeaders(req));
+
+  // Reject requests from unauthorized origins (stops cross-site broker proxy abuse)
+  const denied = rejectOrigin(req);
+  if (denied) return denied;
 
   let body;
   try { body = await req.json(); } catch { return json({ error: "invalid_json" }, 400); }
@@ -21,6 +27,7 @@ export default async function handler(req) {
 
 async function handleAuth({ login, password }) {
   if (!login || !password) return json({ error: "login and password required" }, 400);
+  if (login.length > 200 || password.length > 200) return json({ error: "invalid credentials" }, 400);
 
   const r = await fetch(`${BASE}/sessions`, {
     method: "POST",
@@ -137,9 +144,9 @@ async function handleOrder({ token, accountNumber, order }, dryRun) {
   });
 }
 
-function json(body, status = 200) {
+function json(body, status = 200, extra = {}) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...extra },
   });
 }

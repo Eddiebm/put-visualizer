@@ -1,16 +1,22 @@
 export const config = { runtime: "edge" };
 
+import { corsHeaders } from "./_cors.js";
+
+const MAX_STOCKS = 25;
+
 export default async function handler(req) {
-  if (req.method !== "POST") return json({ error: "method_not_allowed" }, 405);
+  const ch = corsHeaders(req);
+  if (req.method !== "POST") return json({ error: "method_not_allowed" }, 405, ch);
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) return json({ available: false, reason: "no_key" }, 200);
+  if (!apiKey) return json({ available: false, reason: "no_key" }, 200, ch);
 
   let body;
-  try { body = await req.json(); } catch { return json({ error: "invalid_json" }, 400); }
+  try { body = await req.json(); } catch { return json({ error: "invalid_json" }, 400, ch); }
 
   const { stocks, capital, mode } = body;
-  if (!Array.isArray(stocks) || stocks.length === 0) return json({ error: "no_stocks" }, 400);
+  if (!Array.isArray(stocks) || stocks.length === 0) return json({ error: "no_stocks" }, 400, ch);
+  if (stocks.length > MAX_STOCKS) return json({ error: "too_many_stocks" }, 400, ch);
 
   const stratLabel =
     mode === "spread" ? "put credit spread (capped loss, good for small accounts)"
@@ -74,21 +80,22 @@ Return ONLY valid JSON, no prose outside it:
       }),
     });
 
-    if (!r.ok) return json({ error: "upstream_error", status: r.status }, 502);
+    if (!r.ok) return json({ error: "upstream_error", status: r.status }, 502, ch);
 
     const data = await r.json();
     const text = data?.content?.[0]?.text ?? "";
 
     // extract JSON from response (model may wrap it in markdown)
     const match = text.match(/\{[\s\S]*\}/);
-    if (!match) return json({ error: "bad_response" }, 502);
+    if (!match) return json({ error: "bad_response" }, 502, ch);
 
     const parsed = JSON.parse(match[0]);
     return json({ available: true, ...parsed }, 200, {
       "cache-control": "s-maxage=300, stale-while-revalidate=600",
+      ...ch,
     });
   } catch {
-    return json({ error: "analysis_failed" }, 502);
+    return json({ error: "analysis_failed" }, 502, ch);
   }
 }
 
