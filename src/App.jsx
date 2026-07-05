@@ -3258,7 +3258,7 @@ function MorningGates() {
   })();
 
   // Gate 2: Economic calendar
-  const highImpact = (calendar ?? []).filter(e => e.impact === "high");
+  const highImpact = (calendar?.today ?? []).filter(e => e.impact === "high");
   const calGate = highImpact.length > 0
     ? { pass: false, text: `${highImpact[0].event} today — markets will be volatile` }
     : { pass: true,  text: "No major economic events today" };
