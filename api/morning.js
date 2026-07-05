@@ -116,7 +116,7 @@ async function fetchAllMarkets() {
         available: !!q,
       };
     }
-    return out;
+    return Object.values(out);
   } catch {
     return null;
   }
