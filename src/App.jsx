@@ -20,6 +20,11 @@ const TOUR_KEY = "csp_tour_done_v1";
 const TASTY_LIVE_ACK_KEY = "tasty_live_ack_at";
 const TASTY_LIVE_ACK_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
+// Optional server-side backup of the journal (see api/journal.js). The key
+// entered here must match JOURNAL_ACCESS_KEY on the server; without one set
+// here, everything works exactly as before — localStorage only.
+const JOURNAL_SYNC_KEY_STORAGE = "journal_sync_key";
+
 function buildTourSteps(ticker, inputs, model) {
   const company = COMPANIES.find((c) => c.ticker === ticker);
   const sym = ticker || "the stock";
@@ -325,7 +330,12 @@ export default function App() {
     try { return JSON.parse(localStorage.getItem("tasty_session") ?? "null"); } catch { return null; }
   });
   const [tastyOrder, setTastyOrder] = useState(null); // order pending confirmation
+  const [syncKey, setSyncKey] = useState(() => {
+    try { return localStorage.getItem(JOURNAL_SYNC_KEY_STORAGE) || ""; } catch { return ""; }
+  });
+  const [syncStatus, setSyncStatus] = useState("idle"); // idle | checking | synced | offline | unauthorized | not_configured
   const appliedRef = useRef(null);
+  const syncedOnceRef = useRef(false);
 
   function dismissTour() {
     try { localStorage.setItem(TOUR_KEY, "1"); } catch { /* ignore */ }
@@ -347,6 +357,48 @@ export default function App() {
       /* ignore quota / private-mode errors */
     }
   }, [journal]);
+
+  // On mount, if a sync key is configured, pull the server copy of the
+  // journal and adopt it as source of truth (it's the durable copy — the
+  // local one is just this browser's cache). Runs once.
+  useEffect(() => {
+    if (!syncKey) return;
+    setSyncStatus("checking");
+    fetch("/api/journal", { headers: { "x-journal-key": syncKey } })
+      .then((r) => r.json().then((d) => ({ ok: r.ok, status: r.status, d })))
+      .then(({ ok, status, d }) => {
+        if (status === 401) { setSyncStatus("unauthorized"); return; }
+        if (!d.available) { setSyncStatus("not_configured"); return; }
+        if (Array.isArray(d.entries) && d.entries.length > 0) {
+          syncedOnceRef.current = true; // this fetch will drive a setJournal — don't echo it right back
+          setJournal(d.entries);
+        }
+        setSyncStatus("synced");
+      })
+      .catch(() => setSyncStatus("offline"));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Push the full journal to the server whenever it changes, if a sync key
+  // is configured. Full-replace, not incremental — see api/journal.js.
+  useEffect(() => {
+    if (!syncKey) return;
+    if (syncedOnceRef.current) { syncedOnceRef.current = false; return; } // skip the echo from the pull above
+    setSyncStatus("checking");
+    fetch("/api/journal", {
+      method: "POST",
+      headers: { "x-journal-key": syncKey, "content-type": "application/json" },
+      body: JSON.stringify({ action: "sync", entries: journal }),
+    })
+      .then((r) => r.json().then((d) => ({ status: r.status, d })))
+      .then(({ status, d }) => {
+        if (status === 401) { setSyncStatus("unauthorized"); return; }
+        if (!d.available) { setSyncStatus("not_configured"); return; }
+        setSyncStatus(d.error ? "offline" : "synced");
+      })
+      .catch(() => setSyncStatus("offline"));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [journal, syncKey]);
 
   // Sync Tastytrade live balance → capital field
   useEffect(() => {
@@ -833,6 +885,17 @@ export default function App() {
         </footer>
       </div>
       <AiAssistant context={{ ...aiContext, capital }} />
+      <JournalSync
+        syncKey={syncKey}
+        status={syncStatus}
+        onSetKey={(k) => {
+          setSyncKey(k);
+          try {
+            if (k) localStorage.setItem(JOURNAL_SYNC_KEY_STORAGE, k);
+            else localStorage.removeItem(JOURNAL_SYNC_KEY_STORAGE);
+          } catch {}
+        }}
+      />
       <TastyConnect tasty={tasty} onConnect={setTasty} onDisconnect={() => setTasty(null)} />
       {tastyOrder && (
         <TastyOrderConfirm
@@ -2039,6 +2102,84 @@ function buildTastyOrder({ mode, ticker, expiration, putStrike, putPrem, longStr
 }
 
 // ─── Tastytrade: connect widget ────────────────────────────────────────────────
+
+// ─── Journal sync: optional server-side backup ────────────────────────────
+// Without this, the trade journal — the only record of real trades — lives
+// only in this browser's localStorage. Purely optional: everything works
+// unchanged if it's never set up.
+
+function JournalSync({ syncKey, status, onSetKey }) {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState(syncKey);
+
+  const badge = {
+    idle: null,
+    checking: { text: "Syncing…", color: "#64748b", bg: "#f8fafc" },
+    synced: { text: "✓ Journal backed up", color: "#16a34a", bg: "#f0fdf4" },
+    offline: { text: "⚠ Backup unreachable — using local copy", color: "#d97706", bg: "#fffbeb" },
+    unauthorized: { text: "✕ Wrong sync key", color: "#e14c4c", bg: "#fff5f5" },
+    not_configured: { text: "Backup not set up on server", color: "#94a3b8", bg: "#f8fafc" },
+  }[status];
+
+  return (
+    <div style={{ position: "fixed", bottom: 24, left: 24, zIndex: 150 }}>
+      {open && (
+        <div style={{
+          marginBottom: 8, background: "#fff", border: "1px solid #e2e8f0",
+          borderRadius: 14, padding: 18, width: 280,
+          boxShadow: "0 8px 32px rgba(0,0,0,0.14)",
+        }}>
+          <div style={{ fontWeight: 700, fontSize: 14, color: "#0f172a", marginBottom: 4 }}>Journal backup</div>
+          <div style={{ fontSize: 12, color: "#64748b", marginBottom: 12, lineHeight: 1.5 }}>
+            Without this, your trade journal lives only in this browser. Enter the same key you set as{" "}
+            <code>JOURNAL_ACCESS_KEY</code> on the server to back it up.
+          </div>
+          <input
+            type="password" placeholder="Sync key" value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            style={{ width: "100%", border: "1px solid #e2e8f0", borderRadius: 8, padding: "8px 10px", fontSize: 13, marginBottom: 8, boxSizing: "border-box" }}
+          />
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              type="button" onClick={() => { onSetKey(draft.trim()); }}
+              disabled={!draft.trim()}
+              style={{ flex: 1, padding: "9px 0", background: draft.trim() ? "#0f172a" : "#e2e8f0", color: draft.trim() ? "#fff" : "#94a3b8", border: "none", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: draft.trim() ? "pointer" : "default" }}
+            >
+              Save
+            </button>
+            {syncKey && (
+              <button
+                type="button" onClick={() => { setDraft(""); onSetKey(""); }}
+                style={{ flex: 1, padding: "9px 0", background: "none", border: "1px solid #e2e8f0", borderRadius: 8, fontSize: 12, color: "#64748b", cursor: "pointer" }}
+              >
+                Remove
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        {badge && (
+          <div style={{ background: badge.bg, color: badge.color, border: `1px solid ${badge.color}30`, borderRadius: 10, padding: "8px 12px", fontSize: 11.5, fontWeight: 600, boxShadow: "0 2px 10px rgba(0,0,0,0.08)" }}>
+            {badge.text}
+          </div>
+        )}
+        <button
+          type="button"
+          onClick={() => setOpen((o) => !o)}
+          style={{
+            background: "#fff", color: "#475569", border: "1px solid #e2e8f0",
+            borderRadius: 10, padding: "9px 12px", fontSize: 12,
+            fontWeight: 700, cursor: "pointer",
+            boxShadow: "0 2px 10px rgba(0,0,0,0.10)",
+          }}
+        >
+          {open ? "✕" : "🗄"}
+        </button>
+      </div>
+    </div>
+  );
+}
 
 function loadTastyAckAt() {
   try {
