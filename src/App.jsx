@@ -4,6 +4,7 @@ import { normCdf, lnDensity, bsPrice, bsGreeks, solveIv, realizedVol as calcReal
 import { popFromDelta, expectedMove, cushionSigma, popPlain, cushionPlain } from "./lib/probability.js";
 import { richnessSignal } from "./lib/richness.js";
 import { opportunityScore, scoreGrade, autopilotChecks, marketCondition as computeMarketCondition } from "./lib/score.js";
+import { analyzeStock, technicalGrade, stockChecks, technicalMarketCondition } from "./lib/technicals.js";
 
 const STORAGE_KEY = "csp_visualizer_inputs_v1";
 const JOURNAL_KEY = "csp_journal_v1";
@@ -367,6 +368,48 @@ function stratPnl(S, p) {
   return (S - p.spot + putLeg + callLeg) * p.shares; // covered
 }
 
+// --- journal-entry helpers shared by the portfolio view and weekly report ---
+// Collateral / max-defined-risk for a logged entry. Uses the stored value
+// when present (entries logged after this field was added) and reconstructs
+// it for older entries. Returns null when risk is genuinely uncapped (a
+// naked strangle) or unreconstructable (an old spread entry logged before
+// its long leg was persisted) — callers must not treat null as zero.
+function entryCollateral(e) {
+  if (e.collateral != null) return e.collateral;
+  const shares = (e.contracts || 0) * 100;
+  if (e.mode === "put") return e.putStrike * shares;
+  if (e.mode === "covered") return e.putStrike * shares + e.spot * shares;
+  if (e.mode === "spread" && e.longStrike != null) return Math.max(0, e.putStrike - e.longStrike) * shares;
+  return null;
+}
+
+function entryRiskNote(e) {
+  if (entryCollateral(e) != null) return null;
+  if (e.mode === "strangle") return "Naked strangle — no defined max loss.";
+  if (e.mode === "spread") return "Long strike wasn't recorded on this older entry — can't reconstruct.";
+  return "Risk not computable for this entry.";
+}
+
+// P&L if the underlying drops dropPct% from the short strike by expiration.
+// Returns null wherever entryCollateral does, for the same reason.
+function entryBadWeekPnl(e, dropPct) {
+  if (entryCollateral(e) == null) return null;
+  const shares = (e.contracts || 0) * 100;
+  const p = {
+    mode: e.mode, putStrike: e.putStrike, putPrem: e.putPrem,
+    longStrike: e.longStrike, longPrem: e.longPrem,
+    callStrike: e.callStrike, callPrem: e.callPrem, spot: e.spot, shares,
+  };
+  const badPrice = e.putStrike * (1 - dropPct / 100);
+  return stratPnl(badPrice, p);
+}
+
+// Signed days until an ISO date — negative means it's already past.
+function entryDaysTo(iso) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso || "")) return null;
+  return Math.round((new Date(iso + "T12:00:00Z") - Date.now()) / 86400000);
+}
+
 export default function App() {
   const [inputs, setInputs] = useState(loadInputs);
   const [ticker, setTicker] = useState("");
@@ -564,11 +607,14 @@ export default function App() {
       expiration,
       putStrike,
       putPrem,
+      longStrike,
+      longPrem,
       callStrike,
       callPrem,
       spot,
       contracts,
       credit: model.credit,
+      collateral: model.collateral,
       status: "open",
     };
     setJournal((j) => [entry, ...j]);
@@ -583,6 +629,8 @@ export default function App() {
           mode: e.mode,
           putStrike: e.putStrike,
           putPrem: e.putPrem,
+          longStrike: e.longStrike,
+          longPrem: e.longPrem,
           callStrike: e.callStrike,
           callPrem: e.callPrem,
           spot: e.spot,
@@ -620,8 +668,11 @@ export default function App() {
           <div style={{ display: "flex", gap: 4, borderBottom: "2px solid #e2e8f0", marginBottom: 0 }}>
             {[
               { key: "today", label: "Today's picks" },
+              { key: "alex", label: "🔭 Alex's scan" },
               { key: "calculator", label: "Calculator" },
               { key: "compare", label: "Compare stocks" },
+              { key: "portfolio", label: "📋 Sarah's book" },
+              { key: "weekly", label: "📈 Elena's report" },
               { key: "review", label: "Review" },
               { key: "learn", label: "📚 Learn" },
             ].map(t => (
@@ -682,6 +733,30 @@ export default function App() {
             }}
           />
         )}
+
+        {tab === "alex" && (
+          <AlexScan
+            capital={capital}
+            onLoad={(sym) => {
+              selectCompany(sym);
+              setTab("calculator");
+              window.scrollTo({ top: 0, behavior: "smooth" });
+            }}
+          />
+        )}
+
+        {tab === "portfolio" && (
+          <PortfolioView
+            journal={journal}
+            dropPct={dropPct}
+            onOpenJournal={() => {
+              setTab("calculator");
+              window.scrollTo({ top: 0, behavior: "smooth" });
+            }}
+          />
+        )}
+
+        {tab === "weekly" && <WeeklyReport journal={journal} />}
 
         {tab === "review" && (
           <DayReview journal={journal} scanStats={scanStats} capital={capital} />
@@ -2631,7 +2706,7 @@ function ExplainCheckItem({ check, accent, icon, text }) {
 // ─── Day Review ───────────────────────────────────────────────────────────────
 
 function DayReview({ journal, scanStats, capital }) {
-  const todayStr = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  const todayStr = today(); // openedAt/closedAt are stored as ISO (see today()) — must match here
   const todayTrades = journal.filter(e => e.openedAt === todayStr);
   const todayClosed = todayTrades.filter(e => e.status === "closed");
   const todayOpen = todayTrades.filter(e => e.status === "open");
@@ -2770,6 +2845,262 @@ function DayReview({ journal, scanStats, capital }) {
                 </div>
               ));
             })()}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Sarah's book — cross-position portfolio view ─────────────────────────
+// The one thing the calculator and per-trade journal don't show on their
+// own: everything open, added up, checked the same way each day.
+
+function PortfolioView({ journal, dropPct, onOpenJournal }) {
+  const open = useMemo(() => journal.filter((e) => e.status === "open"), [journal]);
+  const [earningsMap, setEarningsMap] = useState({});
+
+  useEffect(() => {
+    if (open.length === 0) { setEarningsMap({}); return; }
+    const pairs = [...new Set(
+      open
+        .filter((e) => e.ticker && e.ticker !== "—" && /^\d{4}-\d{2}-\d{2}$/.test(e.expiration || ""))
+        .map((e) => `${e.ticker}|${e.expiration}`)
+    )];
+    let cancelled = false;
+    Promise.all(
+      pairs.map((key) => {
+        const [sym, exp] = key.split("|");
+        return fetch(`/api/earnings?symbol=${sym}&expiration=${exp}`)
+          .then((r) => (r.ok ? r.json() : null))
+          .catch(() => null)
+          .then((d) => [key, d]);
+      })
+    ).then((entries) => {
+      if (cancelled) return;
+      const map = {};
+      entries.forEach(([key, d]) => { if (d?.available) map[key] = d; });
+      setEarningsMap(map);
+    });
+    return () => { cancelled = true; };
+  }, [open]);
+
+  if (open.length === 0) {
+    return (
+      <div style={{ textAlign: "center", padding: "48px 24px", background: "#f8fafc", borderRadius: 16, border: "1.5px solid #e2e8f0" }}>
+        <div style={{ fontSize: 32, marginBottom: 12 }}>📋</div>
+        <div style={{ fontWeight: 700, fontSize: 16, color: "#0f172a", marginBottom: 6 }}>No open positions</div>
+        <div style={{ fontSize: 13, color: "#94a3b8", maxWidth: 340, margin: "0 auto" }}>
+          Log a trade from the Calculator tab and it shows up here — the cross-position view to check before the close each day.
+        </div>
+      </div>
+    );
+  }
+
+  const rows = open.map((e) => ({
+    e,
+    collateral: entryCollateral(e),
+    badWeekPnl: entryBadWeekPnl(e, dropPct),
+    riskNote: entryRiskNote(e),
+    dte: entryDaysTo(e.expiration),
+    earn: earningsMap[`${e.ticker}|${e.expiration}`],
+  }));
+
+  const defined = rows.filter((r) => r.collateral != null);
+  const totalCollateral = defined.reduce((s, r) => s + r.collateral, 0);
+  const totalBadWeek = defined.reduce((s, r) => s + (r.badWeekPnl ?? 0), 0);
+  const uncappedCount = rows.length - defined.length;
+  const earningsRiskCount = rows.filter((r) => r.earn?.hasEarnings).length;
+  const soonest = rows.reduce((m, r) => (r.dte != null && (m == null || r.dte < m) ? r.dte : m), null);
+
+  return (
+    <div style={{ paddingTop: 8 }}>
+      <div style={{ fontWeight: 700, fontSize: 17, color: "#0f172a", marginBottom: 4 }}>📋 Sarah's book</div>
+      <div style={{ fontSize: 13, color: "#64748b", marginBottom: 18 }}>
+        Every open position, added up — collateral locked, worst-week exposure, and what's coming due.
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12, marginBottom: 20 }}>
+        <Stat label="Open positions" value={rows.length} />
+        <Stat label="Collateral locked" value={money(totalCollateral)} />
+        <Stat label={`Bad-week loss (−${trimNum(dropPct)}%)`} value={moneySigned(totalBadWeek)} tone={totalBadWeek < 0 ? "bad" : undefined} big />
+        <Stat label="Soonest expiration" value={soonest != null ? (soonest <= 0 ? "past due" : `${soonest}d`) : "—"} tone={soonest != null && soonest <= 3 ? "bad" : undefined} />
+      </div>
+
+      {uncappedCount > 0 && (
+        <div style={{ ...styles.warnBar, marginBottom: 16 }}>
+          {uncappedCount} position{uncappedCount !== 1 ? "s" : ""} {uncappedCount !== 1 ? "carry" : "carries"} undefined or uncapped risk and {uncappedCount !== 1 ? "are" : "is"} left out of the totals above — see the notes in the table below. Don't read the totals as "everything."
+        </div>
+      )}
+      {earningsRiskCount > 0 && (
+        <div style={{ ...styles.warnBar, marginBottom: 16, background: "#fff5f5", borderColor: "#fecaca", color: "#991b1b" }}>
+          {earningsRiskCount} position{earningsRiskCount !== 1 ? "s" : ""} {earningsRiskCount !== 1 ? "have" : "has"} earnings before expiration — a gap risk a stop-loss can't protect against.
+        </div>
+      )}
+
+      <div style={{ overflowX: "auto" }}>
+        <table style={styles.screenerTable}>
+          <thead>
+            <tr>
+              {["Position", "Expiration", "DTE", "Collateral", `−${trimNum(dropPct)}% scenario`, "Earnings"].map((h) => (
+                <th key={h} style={styles.screenerTh}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(({ e, collateral, badWeekPnl, riskNote, dte, earn }, i) => (
+              <tr key={e.id} style={{ background: i % 2 === 0 ? "#fff" : "#f8fafc" }}>
+                <td style={styles.screenerTd}>
+                  <div style={{ fontWeight: 700, fontSize: 13 }}>{e.ticker} · {e.mode} · {legLabel(e)} ×{e.contracts}</div>
+                  <div style={{ fontSize: 11, color: "#94a3b8" }}>opened {e.openedAt}</div>
+                </td>
+                <td style={styles.screenerTd}>{e.expiration}</td>
+                <td style={{ ...styles.screenerTd, fontWeight: 700, color: dte == null ? "#cbd5e1" : dte <= 0 ? "#e14c4c" : dte <= 3 ? "#d97706" : "#0f172a" }}>
+                  {dte == null ? "—" : dte <= 0 ? "past due" : `${dte}d`}
+                </td>
+                <td style={{ ...styles.screenerTd, whiteSpace: collateral != null ? "nowrap" : "normal", maxWidth: collateral != null ? undefined : 220 }}>
+                  {collateral != null ? money(collateral) : <span style={{ color: "#e14c4c", fontSize: 11.5 }}>{riskNote}</span>}
+                </td>
+                <td style={{ ...styles.screenerTd, fontWeight: 700, color: badWeekPnl == null ? "#cbd5e1" : badWeekPnl < 0 ? "#e14c4c" : "#16a34a" }}>
+                  {badWeekPnl != null ? moneySigned(badWeekPnl) : "—"}
+                </td>
+                <td style={styles.screenerTd}>
+                  {earn?.hasEarnings
+                    ? <span style={{ color: "#e14c4c", fontWeight: 700, fontSize: 12 }}>⚠ {earn.date || "before exp."}</span>
+                    : earn ? <span style={{ color: "#94a3b8", fontSize: 12 }}>clear</span> : <span style={{ color: "#cbd5e1", fontSize: 12 }}>checking…</span>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <p style={{ fontSize: 11.5, color: "#94a3b8", lineHeight: 1.5, margin: "14px 0 0" }}>
+        The bad-week scenario uses the same −{trimNum(dropPct)}% set in the Calculator tab. To close or update a position, use{" "}
+        <button type="button" onClick={onOpenJournal} style={{ background: "none", border: "none", color: "#1f2937", textDecoration: "underline", cursor: "pointer", padding: 0, font: "inherit" }}>
+          the journal in the Calculator tab
+        </button>.
+      </p>
+    </div>
+  );
+}
+
+// ─── Elena's report — realized performance, grouped by week ──────────────
+// No streaks, no confetti, no leading with win rate. Losses are shown with
+// exactly the same weight as gains, same as the journal they're drawn from.
+
+function weekStartIso(dateStr) {
+  const d = new Date(dateStr + "T12:00:00Z");
+  const diffToMonday = (d.getUTCDay() + 6) % 7;
+  d.setUTCDate(d.getUTCDate() - diffToMonday);
+  return d.toISOString().slice(0, 10);
+}
+
+function weekLabel(mondayIso) {
+  const start = new Date(mondayIso + "T12:00:00Z");
+  const end = new Date(start);
+  end.setUTCDate(end.getUTCDate() + 6);
+  const fmt = (d) => d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+  return `${fmt(start)}–${fmt(end)}, ${start.getUTCFullYear()}`;
+}
+
+function summarizeWeek(entries) {
+  const wins = entries.filter((e) => e.realizedPnl >= 0);
+  const losses = entries.filter((e) => e.realizedPnl < 0);
+  const realized = entries.reduce((s, e) => s + e.realizedPnl, 0);
+  const worst = losses.reduce((m, e) => Math.min(m, e.realizedPnl), 0);
+  const withCollateral = entries.map((e) => ({ e, c: entryCollateral(e) })).filter((x) => x.c);
+  const avgReturnPct = withCollateral.length
+    ? (withCollateral.reduce((s, x) => s + x.e.realizedPnl / x.c, 0) / withCollateral.length) * 100
+    : null;
+  return { count: entries.length, wins, losses, realized, worst, avgReturnPct };
+}
+
+function WeeklyReport({ journal }) {
+  const closed = journal.filter((e) => e.status === "closed" && /^\d{4}-\d{2}-\d{2}$/.test(e.closedAt || ""));
+
+  if (closed.length === 0) {
+    return (
+      <div style={{ textAlign: "center", padding: "48px 24px", background: "#f8fafc", borderRadius: 16, border: "1.5px solid #e2e8f0" }}>
+        <div style={{ fontSize: 32, marginBottom: 12 }}>📈</div>
+        <div style={{ fontWeight: 700, fontSize: 16, color: "#0f172a", marginBottom: 6 }}>Nothing closed yet</div>
+        <div style={{ fontSize: 13, color: "#94a3b8", maxWidth: 340, margin: "0 auto" }}>
+          Close a trade in the journal and this report starts building — wins and losses both, week by week.
+        </div>
+      </div>
+    );
+  }
+
+  const weeks = {};
+  for (const e of closed) {
+    const wk = weekStartIso(e.closedAt);
+    (weeks[wk] ??= []).push(e);
+  }
+  const weekKeys = Object.keys(weeks).sort((a, b) => b.localeCompare(a));
+  const thisWeekKey = weekStartIso(today());
+  const current = weeks[thisWeekKey] ? summarizeWeek(weeks[thisWeekKey]) : null;
+  const priorKeys = weekKeys.filter((k) => k !== thisWeekKey);
+
+  return (
+    <div style={{ paddingTop: 8 }}>
+      <div style={{ fontWeight: 700, fontSize: 17, color: "#0f172a", marginBottom: 4 }}>📈 Elena's report</div>
+      <div style={{ fontSize: 13, color: "#64748b", marginBottom: 18 }}>
+        Realized trades, grouped by the week they closed — losses included and never netted away.
+      </div>
+
+      <div style={{ marginBottom: 26 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: "#64748b", letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 10 }}>
+          This week — {weekLabel(thisWeekKey)}
+        </div>
+        {current ? (
+          <>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12 }}>
+              <Stat label="Realized P&L" value={moneySigned(current.realized)} tone={current.realized < 0 ? "bad" : "good"} big />
+              <Stat label={`Wins (${current.wins.length})`} value={moneySigned(current.wins.reduce((s, e) => s + e.realizedPnl, 0))} tone="good" />
+              <Stat label={`Losses (${current.losses.length})`} value={moneySigned(current.losses.reduce((s, e) => s + e.realizedPnl, 0))} tone="bad" />
+              <Stat label="Worst single loss" value={current.losses.length ? money(current.worst) : "—"} tone="bad" />
+              <Stat label="Avg. return on collateral" value={current.avgReturnPct != null ? `${current.avgReturnPct.toFixed(1)}%` : "n/a"} />
+            </div>
+            {current.losses.length === 0 && (
+              <p style={styles.journalNote}>No losses this week — keep logging the bad weeks too when they come.</p>
+            )}
+          </>
+        ) : (
+          <p style={{ fontSize: 13, color: "#94a3b8" }}>Nothing closed yet this week.</p>
+        )}
+      </div>
+
+      {priorKeys.length > 0 && (
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: "#64748b", letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 10 }}>
+            Previous weeks
+          </div>
+          <div style={{ overflowX: "auto" }}>
+            <table style={styles.screenerTable}>
+              <thead>
+                <tr>
+                  {["Week", "Trades", "Realized P&L", "Wins", "Losses", "Worst loss", "Avg. return on collateral"].map((h) => (
+                    <th key={h} style={styles.screenerTh}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {priorKeys.slice(0, 12).map((k, i) => {
+                  const s = summarizeWeek(weeks[k]);
+                  return (
+                    <tr key={k} style={{ background: i % 2 === 0 ? "#fff" : "#f8fafc" }}>
+                      <td style={styles.screenerTd}>{weekLabel(k)}</td>
+                      <td style={styles.screenerTd}>{s.count}</td>
+                      <td style={{ ...styles.screenerTd, fontWeight: 700, color: s.realized < 0 ? "#e14c4c" : "#16a34a" }}>{moneySigned(s.realized)}</td>
+                      <td style={{ ...styles.screenerTd, color: "#16a34a" }}>{s.wins.length}</td>
+                      <td style={{ ...styles.screenerTd, color: "#e14c4c" }}>{s.losses.length}</td>
+                      <td style={{ ...styles.screenerTd, color: s.losses.length ? "#e14c4c" : "#cbd5e1" }}>{s.losses.length ? money(s.worst) : "—"}</td>
+                      <td style={styles.screenerTd}>{s.avgReturnPct != null ? `${s.avgReturnPct.toFixed(1)}%` : "n/a"}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
         </div>
       )}
@@ -3055,6 +3386,208 @@ function Screener({ expiration, dropPct, capital, mode, onLoad }) {
         </>
       )}
     </section>
+  );
+}
+
+// ─── Alex's scan — technical stock/ETF screener ───────────────────────────
+// Independent from the options-pricing scan on "Today's picks": this asks
+// "is the stock/ETF itself in a good technical setup?" (trend, pullback,
+// relative strength vs. SPY, momentum, volume) rather than "is the option
+// priced richly?" A high score here is a candidate worth structuring a
+// trade around, not a trade by itself.
+
+function AlexScan({ capital, onLoad }) {
+  const [results, setResults] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [condition, setCondition] = useState(null);
+  const [lastRun, setLastRun] = useState(null);
+  const [sortKey, setSortKey] = useState("score");
+  const [sortDir, setSortDir] = useState("desc");
+  const [expanded, setExpanded] = useState(null);
+
+  useEffect(() => { runScan(); }, []);
+
+  async function runScan() {
+    setLoading(true);
+    setExpanded(null);
+
+    const exp30 = targetExpiration(30);
+    const [spyData, earningsBulk] = await Promise.all([
+      fetch(`/api/history?symbol=SPY&days=220`).then((r) => (r.ok ? r.json() : null)).catch(() => null),
+      fetch(`/api/earnings?expiration=${exp30}`).then((r) => (r.ok ? r.json() : null)).catch(() => null),
+    ]);
+    const spyBars = spyData?.available ? spyData.bars : null;
+    const earningsMap = earningsBulk?.earningsMap ?? null;
+
+    const analyzed = await Promise.all(
+      COMPANIES.map(async (c) => {
+        const histData = await fetch(`/api/history?symbol=${c.ticker}&days=220`)
+          .then((r) => (r.ok ? r.json() : null)).catch(() => null);
+        if (!histData?.available || !histData.bars?.length) return null;
+
+        const earningsEntry = earningsMap ? (earningsMap[c.ticker] ?? { hasEarnings: false }) : null;
+        const hasEarnings = earningsEntry ? earningsEntry.hasEarnings : null;
+        const earningsDate = earningsEntry?.date ?? null;
+
+        return analyzeStock({
+          sym: c.ticker, name: c.name, bars: histData.bars, capital,
+          hasEarnings, earningsDate, spyBars,
+        });
+      })
+    );
+
+    const clean = analyzed.filter(Boolean);
+    setResults(clean);
+    setCondition(technicalMarketCondition(spyBars));
+    setLastRun(new Date());
+    setLoading(false);
+  }
+
+  function toggleSort(key) {
+    if (sortKey === key) setSortDir((d) => (d === "desc" ? "asc" : "desc"));
+    else { setSortKey(key); setSortDir("desc"); }
+  }
+
+  const sorted = [...results].sort((a, b) => {
+    const av = a[sortKey] ?? -Infinity;
+    const bv = b[sortKey] ?? -Infinity;
+    return sortDir === "desc" ? bv - av : av - bv;
+  });
+
+  if (loading) {
+    return (
+      <div style={{ padding: "64px 0", textAlign: "center" }}>
+        <div style={{ fontSize: 32, marginBottom: 16 }}>🔭</div>
+        <div style={{ fontWeight: 700, fontSize: 16, color: "#0f172a", marginBottom: 6 }}>
+          Alex is scanning {COMPANIES.length} stocks and ETFs…
+        </div>
+        <div style={{ fontSize: 13, color: "#94a3b8" }}>
+          Trend, pullback quality, relative strength vs. SPY, momentum, and volume — a technical read, independent of option pricing.
+        </div>
+      </div>
+    );
+  }
+
+  const COLS = [
+    { key: "sym", label: "Stock", num: false },
+    { key: "score", label: "Score", num: true },
+    { key: "price", label: "Price", num: true },
+    { key: "pullbackPct", label: "Above 20d", num: true },
+    { key: "relStrength", label: "Rel. strength", num: true },
+    { key: "rsiVal", label: "RSI", num: true },
+    { key: "volRatio", label: "Vol ratio", num: true },
+  ];
+
+  return (
+    <div style={{ paddingTop: 8 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap", marginBottom: 18 }}>
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 17, color: "#0f172a" }}>🔭 Alex's scan</div>
+          <div style={{ fontSize: 13, color: "#64748b", marginTop: 2 }}>
+            A technical read on {COMPANIES.length} stocks/ETFs — separate from the options-pricing scan on "Today's picks."
+          </div>
+        </div>
+        <button type="button" onClick={runScan} style={{ ...styles.sizingBtn, marginLeft: 0 }}>
+          Refresh ↺
+        </button>
+      </div>
+
+      {condition && (
+        <div style={{
+          background: condition.color + "12", border: `1.5px solid ${condition.color}30`,
+          borderRadius: 12, padding: "16px 20px", marginBottom: 20,
+        }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: condition.color, letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 4 }}>
+            {condition.emoji} {condition.label}
+          </div>
+          <div style={{ fontSize: 13, color: "#0f172a", lineHeight: 1.5 }}>{condition.summary}</div>
+          <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 8 }}>
+            scanned {lastRun ? lastRun.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "just now"} · needs an Alpaca market-data key for real price history
+          </div>
+        </div>
+      )}
+
+      {results.length === 0 ? (
+        <div style={{ textAlign: "center", padding: "48px 24px", background: "#f8fafc", borderRadius: 16, border: "1.5px solid #e2e8f0" }}>
+          <div style={{ fontSize: 15, color: "#475569" }}>
+            No price history came back — this needs an Alpaca market-data key (see the README) to fetch daily bars.
+          </div>
+        </div>
+      ) : (
+        <div style={{ overflowX: "auto" }}>
+          <table style={styles.screenerTable}>
+            <thead>
+              <tr>
+                {COLS.map((col) => (
+                  <th
+                    key={col.key}
+                    onClick={() => col.num && toggleSort(col.key)}
+                    style={{ ...styles.screenerTh, cursor: col.num ? "pointer" : "default", color: sortKey === col.key ? "#0f172a" : "#64748b" }}
+                  >
+                    {col.label}{sortKey === col.key ? (sortDir === "desc" ? " ↓" : " ↑") : ""}
+                  </th>
+                ))}
+                <th style={styles.screenerTh} />
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map((r, i) => (
+                <React.Fragment key={r.sym}>
+                  <tr style={{ background: i % 2 === 0 ? "#fff" : "#f8fafc" }}>
+                    <td style={styles.screenerTd}>
+                      <div style={{ fontWeight: 700, fontSize: 13 }}>{r.sym}</div>
+                      <div style={{ fontSize: 11, color: "#94a3b8" }}>{r.name}</div>
+                    </td>
+                    <td style={styles.screenerTd}>
+                      <span style={{ fontSize: 11, fontWeight: 800, color: r.grade.color, background: r.grade.bg, borderRadius: 6, padding: "3px 8px" }}>
+                        {r.score} · {r.grade.label}
+                      </span>
+                    </td>
+                    <td style={styles.screenerTd}>{money2(r.price)}</td>
+                    <td style={styles.screenerTd}>{r.pullbackPct != null ? `${(r.pullbackPct * 100).toFixed(1)}%` : "—"}</td>
+                    <td style={{ ...styles.screenerTd, color: r.relStrength != null ? (r.relStrength >= 0 ? "#16a34a" : "#e14c4c") : "#cbd5e1" }}>
+                      {r.relStrength != null ? `${r.relStrength >= 0 ? "+" : ""}${(r.relStrength * 100).toFixed(1)}%` : "—"}
+                    </td>
+                    <td style={styles.screenerTd}>{r.rsiVal != null ? Math.round(r.rsiVal) : "—"}</td>
+                    <td style={styles.screenerTd}>{r.volRatio != null ? `${r.volRatio.toFixed(1)}×` : "—"}</td>
+                    <td style={styles.screenerTd}>
+                      <button type="button" onClick={() => setExpanded((x) => (x === r.sym ? null : r.sym))} style={styles.loadBtn}>
+                        {expanded === r.sym ? "Hide" : "Checks"}
+                      </button>{" "}
+                      <button type="button" onClick={() => onLoad(r.sym)} style={{ ...styles.loadBtn, marginLeft: 6 }}>
+                        Load ↑
+                      </button>
+                    </td>
+                  </tr>
+                  {expanded === r.sym && (
+                    <tr>
+                      <td colSpan={COLS.length + 1} style={{ padding: "4px 10px 16px", borderBottom: "1px solid #f1f5f9" }}>
+                        <div style={{ display: "grid", gap: 10, maxWidth: 640 }}>
+                          {stockChecks(r).map((c) => (
+                            <ExplainCheckItem
+                              key={c.key}
+                              check={c}
+                              accent={c.manual ? "#94a3b8" : c.pass ? "#16a34a" : c.warn ? "#d97706" : "#e14c4c"}
+                              icon={c.manual ? "…" : c.pass ? "✓" : c.warn ? "!" : "✕"}
+                              text={c.warn && !c.pass ? c.warnLabel : c.pass ? c.label : (c.fail || c.label)}
+                            />
+                          ))}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <p style={{ fontSize: 11.5, color: "#94a3b8", lineHeight: 1.5, margin: "14px 0 0" }}>
+        This is a technical scan of the stock or ETF itself, not an options price check. A high score here is a candidate worth structuring
+        a trade around, not a trade by itself. Earnings inside the next 30 days zero out the score.
+      </p>
+    </div>
   );
 }
 

@@ -1,25 +1,41 @@
 # Cash-Secured Put — Honest P&L Visualizer
 
-A small local app that draws the real profit-and-loss curve of a cash-secured put.
-You type four things — **strike price**, **premium per share**, **number of contracts**,
-and **how far the stock might fall in a bad week** — and it shows you the asymmetry the
-options-selling videos tend to skip past:
+A small local app that draws the real profit-and-loss curve of a cash-secured put (plus
+put credit spreads, short strangles, and covered strangles). You type the trade's numbers
+and it shows you the asymmetry the options-selling videos tend to skip past:
 
 - a **flat green ceiling** marking the most you can ever make (the premium), and
 - a **red, pulsing dot** sitting on the curve where a bad-week drop drags you.
 
 The green stays small and flat. The red opens up underneath. That gap *is* the point.
 
-Below the chart it shows the four numbers that actually matter:
+Below the chart it shows the numbers that actually matter — cash locked up, premium
+collected, breakeven price, and bad-week loss. Your inputs and trade journal are saved to
+`localStorage`, so closing and reopening it keeps your history.
 
-| Number | What it means |
-| --- | --- |
-| **Cash locked up** | `strike × 100 × contracts` — the collateral you can't touch |
-| **Premium collected** | `premium × 100 × contracts` — your maximum possible gain |
-| **Breakeven price** | `strike − premium` — below this you're losing money |
-| **Bad-week loss** | your P&L if the stock falls by the % you entered |
+## What's here
 
-Your inputs are saved to `localStorage`, so closing and reopening it keeps your last setup.
+The app is organized around three questions, framed as three people checking in — the
+same shape a small trading desk actually runs:
+
+- **🔭 Alex's scan** — "what's worth a look?" A technical read (trend, pullback to
+  support, relative strength vs. SPY, momentum, volume) across ~40 stocks/ETFs, independent
+  from the options-pricing scan on **Today's picks**. Ported from a companion project,
+  [`stock-coach`](https://github.com/Eddiebm/stock-coach).
+- **Calculator + journal** — structure a trade, log it, and record how it actually closed
+  (wins *and* losses, never netted away).
+- **📋 Sarah's book** — "what's open, and what does it add up to?" A cross-position view:
+  total collateral locked, aggregate bad-week loss, days to expiration, and an earnings-risk
+  flag per position — the numbers no single trade's calculator page shows on its own.
+- **📈 Elena's report** — "how did the week go?" Realized P&L grouped by the week a trade
+  closed, wins and losses both, with average return on collateral always shown next to the
+  worst single loss, never alone.
+- **Compare stocks**, **Review**, and **📚 Learn** — a manual options screener, a daily
+  discipline scorecard, and a 60-day plain-English options curriculum.
+
+All of this reads from the same local trade journal — there's no separate database. The
+one live-trading path in the app (`api/tasty.js`, tastytrade order placement) is untouched
+by any of the above; those views are read/aggregate-only.
 
 ## Run it
 
@@ -78,20 +94,28 @@ premium, that side has real room to run.
 
 ## A note to Claude Code (if you extend this)
 
-This tool exists to be **honest about risk**, not to flatter the trade. If you add features,
-keep that intact. Specifically:
+This tool exists to be **honest about risk**, not to flatter the trade. There is no such
+thing as a trading app that "never loses" — if a future request asks for that, the honest
+answer is no, not a UI that hides or reclassifies losses. If you add features, keep the
+ethos intact. Specifically:
 
-**Good next features (in priority order):**
+**Status of the original roadmap:**
 
-1. **Paper-trade journal** — log each put you'd sell, then record how it *actually* closed.
-   Crucially, track the **losing weeks too**, not just the wins. The whole value is an honest
-   running record, including assignments and drawdowns. Show realized P&L with losses in red,
-   never hidden or netted away.
-2. **Annualized return on collateral** — but always shown next to max loss, never alone.
-3. **Multiple positions** — portfolio view of total cash locked up and aggregate bad-week loss.
+1. ~~**Paper-trade journal**~~ — done (the Calculator tab's journal). Wins and losses both
+   shown, realized P&L never netted away.
+2. ~~**Annualized return on collateral shown next to max loss**~~ — done in two places:
+   the "Compare stocks" screener (yield/yr next to the bad-week scenario column) and
+   Elena's report (avg. return on collateral next to worst single loss).
+3. ~~**Multiple positions / portfolio view**~~ — done as **Sarah's book**: total collateral
+   locked and aggregate bad-week loss across every open position.
 4. **Implied "bad week" presets** — e.g. 1σ / 2σ moves from a volatility input, so the
-   bad-week drop isn't just a guess.
-5. **Assignment view** — what owning the shares at the strike would actually cost and look like.
+   bad-week drop isn't just a guess. *(still open)*
+5. **Assignment view** — what owning the shares at the strike would actually cost and look
+   like. *(still open)*
+
+New from this round: **🔭 Alex's scan** (a technical stock/ETF screener, `src/lib/technicals.js`)
+and **📈 Elena's report** (the weekly aggregation that didn't exist before, grouping the
+journal's closed trades by ISO week).
 
 **Do not** turn this into a "winning" app. Do not lead with annualized yield, win-rate, or
 "X% of puts expire worthless." Do not hide, net, or downplay losses. Do not add streak
