@@ -132,17 +132,39 @@ form even appears (re-required every 24 hours, not a one-time dismissal), and pl
 actual order requires typing `PLACE` into a confirmation field — a single click used to be
 all that stood between the confirm screen and a real order.
 
-## Running the tests
+## Project layout
 
-```bash
-npm test
+```
+src/
+  App.jsx                 top-level state + tab switching (~600 lines)
+  appConstants.js         storage keys, COMPANIES/MODES/DEFAULTS, load*() helpers
+  styles.js               the shared inline-style object + keyframes
+  lib/                    pure logic — no React, all unit-tested
+    blackScholes.js  probability.js  richness.js  score.js  technicals.js
+    pnl.js  journal.js  dates.js  format.js  tastyOrder.js
+  components/             one file per view/widget (Chart, Journal, Screener,
+                           AlexScan, PortfolioView, WeeklyReport, DayReview,
+                           Tastytrade, JournalSync, TodayView, Tour, LearnView, …)
+api/                       Vercel Edge functions (quote, option, history, earnings,
+                           morning, analyze, chat, lesson, tasty, journal)
 ```
 
-Runs the unit tests (Vitest) for every pure/testable module — the options-math libraries
-(`src/lib/blackScholes.js`, `probability.js`, `richness.js`, `score.js`, `technicals.js`,
-`pnl.js`, `journal.js`, `dates.js`) and the `api/journal.js` sync endpoint (with the
-Cloudflare fetch calls mocked). There's no test runner for the React components themselves
-yet — treat that as the next item if you're picking this back up.
+`App.jsx` used to be a single ~4,000-line file holding every component; it's now split
+by feature, matching the app's own tabs. `src/lib/` holds everything with no React
+dependency, which is what makes it unit-testable without rendering anything.
+
+## Running the tests and linter
+
+```bash
+npm test    # Vitest — every pure/testable module in src/lib/ plus api/journal.js
+npm run lint  # ESLint — no-undef (catches a missing import immediately) + react-hooks rules
+```
+
+`no-undef` is doing real work here: this project has no build-time type checking, so it's
+the cheapest guard against a component silently referencing something that was never
+imported — exactly the class of bug a file split like this one is most likely to introduce
+(it caught three on the first pass). There's no test runner for the React components
+themselves yet — treat that as the next item if you're picking this back up.
 
 ## The math (so you can trust the curve)
 
@@ -199,13 +221,19 @@ aggregation, grouping closed trades by ISO week).
 4. Added optional durable backup for the journal via Cloudflare D1 (`api/journal.js`,
    see **Backing up the journal** above) — previously the trade journal existed only in
    one browser's `localStorage`, with no recovery if that browser's data was cleared.
+5. Finished splitting `App.jsx`: every component moved into `src/components/`, one file
+   per view/widget, ~4,000 lines down to ~600. Added ESLint (`no-undef` + `react-hooks`)
+   as part of doing this safely — it caught three real missing-import bugs the split
+   introduced (each verified against a running instance before/after). See **Project
+   layout** above.
 
-**Still open, lower priority than the above:** items 4-5 from the original list
+**Still open, lower priority than the above:** items 4-5 from the original roadmap list
 (volatility-based bad-week presets, an assignment view), and backtesting whether Alex's
 scan's scoring weights (ported as-is from `stock-coach`) actually predict anything —
-they're currently unvalidated against historical outcomes. Also worth doing eventually:
-component-level tests (React Testing Library) and finishing the `App.jsx` split — the
-UI components are still one large file.
+they're currently unvalidated against historical outcomes and need a real deployment
+with live market-data keys to run against. Also worth doing eventually: component-level
+tests (React Testing Library) — the pure logic in `src/lib/` is well-covered, but no test
+renders an actual component yet.
 
 **Do not** turn this into a "winning" app. Do not lead with annualized yield, win-rate, or
 "X% of puts expire worthless." Do not hide, net, or downplay losses. Do not add streak
