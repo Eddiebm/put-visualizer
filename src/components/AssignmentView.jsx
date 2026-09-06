@@ -13,12 +13,24 @@ export function AssignmentView({ mode, ticker, putStrike, putPrem, longStrike, s
   const { shares, totalCost, costBasisPerShare, currentValue, gainLoss, hasSpot } = summary;
   const sym = ticker || "the stock";
 
-  const modeNote = {
-    put: `That ties up the ${money(totalCost)} you set aside as cash-secured collateral — it converts from cash into ${shares} shares.`,
-    spread: `Your long ${money2(longStrike)} put means you don't have to actually hold these shares — exercising it same-day locks in the spread's max loss instead. This view shows what happens if you hold the shares anyway, which most traders don't do.`,
-    strangle: `You're not holding shares to cover this today — assignment means buying ${shares} new shares outright, on top of whatever else you own. (The short call side is a separate, uncapped risk — see the scenario above; it doesn't get better or worse based on this.)`,
-    covered: `You already own ${shares} shares for this trade. Assignment on the put would double that to ${shares * 2} shares total — this card is about that second batch, not the ones you're covering with the call.`,
-  }[mode];
+  // A plain object of eagerly-built strings would evaluate all four branches
+  // on every render — including money2(longStrike) when mode isn't "spread"
+  // and longStrike is undefined. Compute only the one the current mode needs.
+  function buildModeNote() {
+    switch (mode) {
+      case "put":
+        return `That ties up the ${money(totalCost)} you set aside as cash-secured collateral — it converts from cash into ${shares} shares.`;
+      case "spread":
+        return `Your long ${money2(longStrike || 0)} put means you don't have to actually hold these shares — exercising it same-day locks in the spread's max loss instead. This view shows what happens if you hold the shares anyway, which most traders don't do.`;
+      case "strangle":
+        return `You're not holding shares to cover this today — assignment means buying ${shares} new shares outright, on top of whatever else you own. (The short call side is a separate, uncapped risk — see the scenario above; it doesn't get better or worse based on this.)`;
+      case "covered":
+        return `You already own ${shares} shares for this trade. Assignment on the put would double that to ${shares * 2} shares total — this card is about that second batch, not the ones you're covering with the call.`;
+      default:
+        return null;
+    }
+  }
+  const modeNote = buildModeNote();
 
   return (
     <section style={{ marginTop: 20, padding: "16px 18px", background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 12 }}>

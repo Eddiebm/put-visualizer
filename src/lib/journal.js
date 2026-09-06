@@ -25,7 +25,9 @@ export function entryRiskNote(e) {
 }
 
 // P&L if the underlying drops dropPct% from the short strike by expiration.
-// Returns null wherever entryCollateral does, for the same reason.
+// Returns null wherever entryCollateral does, for the same reason — and also
+// whenever the entry is missing a field stratPnl needs (e.g. putPrem), so a
+// malformed entry renders as "—" rather than a misleading "$NaN".
 export function entryBadWeekPnl(e, dropPct) {
   if (entryCollateral(e) == null) return null;
   const shares = (e.contracts || 0) * 100;
@@ -35,7 +37,8 @@ export function entryBadWeekPnl(e, dropPct) {
     callStrike: e.callStrike, callPrem: e.callPrem, spot: e.spot, shares,
   };
   const badPrice = e.putStrike * (1 - dropPct / 100);
-  return stratPnl(badPrice, p);
+  const pnl = stratPnl(badPrice, p);
+  return Number.isFinite(pnl) ? pnl : null;
 }
 
 // Realized-performance summary for a set of closed journal entries — the

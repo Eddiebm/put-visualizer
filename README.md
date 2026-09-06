@@ -156,15 +156,27 @@ dependency, which is what makes it unit-testable without rendering anything.
 ## Running the tests and linter
 
 ```bash
-npm test    # Vitest — every pure/testable module in src/lib/ plus api/journal.js
+npm test    # Vitest — 229 tests: every pure module in src/lib/, api/journal.js,
+            # and every component in src/components/ (React Testing Library)
 npm run lint  # ESLint — no-undef (catches a missing import immediately) + react-hooks rules
 ```
 
 `no-undef` is doing real work here: this project has no build-time type checking, so it's
 the cheapest guard against a component silently referencing something that was never
 imported — exactly the class of bug a file split like this one is most likely to introduce
-(it caught three on the first pass). There's no test runner for the React components
-themselves yet — treat that as the next item if you're picking this back up.
+(it caught three on the first pass). The component tests caught two more real bugs of a
+different kind on their first pass: `entryBadWeekPnl` could render a literal `"$NaN"` in
+Sarah's book for an entry missing `putPrem`, and `AssignmentView`'s mode-specific note was
+a plain object literal that eagerly evaluated *all four* branches on every render —
+including `money2(longStrike)` for non-spread modes, where `longStrike` is `undefined` —
+crashing the whole card. Both are fixed and covered by regression tests now.
+
+The two most safety-critical components — the tastytrade live-trading warning gate and the
+type-`PLACE`-to-confirm order screen — have dedicated test files
+(`Tastytrade.test.jsx`, `TastyOrderConfirm.test.jsx`) specifically to make it hard for
+either gate to regress back to "one click" without a test failing.
+
+CI (`.github/workflows/ci.yml`) runs lint, test, and build on every push and PR.
 
 ## The math (so you can trust the curve)
 
@@ -233,13 +245,21 @@ aggregation, grouping closed trades by ISO week).
 6. Closed out the original roadmap's last two items — volatility-based bad-week presets
    and the assignment view — both above. The underlying math for both lives in
    `src/lib/pnl.js` (`assignmentSummary`) with its own unit tests.
+7. `npm audit fix` — 3 high-severity transitive-dependency advisories (browserslist,
+   nanoid, postcss), all fixed cleanly with no major-version bumps.
+8. Added CI (`.github/workflows/ci.yml`): lint, test, build, and a non-blocking audit
+   check on every push and PR. Previously all of that only ran when someone ran it by hand.
+9. Component tests for every file in `src/components/` (106 new tests, 229 total), which
+   caught two more real bugs on the first pass — see **Running the tests and linter**
+   above for what they were and why "the build passed" hadn't caught them.
 
 **Still open:** backtesting whether Alex's scan's scoring weights (ported as-is from
 `stock-coach`) actually predict anything — they're currently unvalidated against
 historical outcomes, and validating them needs a real deployment with live market-data
-keys, not something that can be done from a sandbox with no credentials. Also worth doing
-eventually: component-level tests (React Testing Library) — the pure logic in `src/lib/`
-is well-covered, but no test renders an actual component yet.
+keys, not something that can be done from a sandbox with no credentials. Also worth
+doing: migrating to TypeScript, which would catch a class of bug (wrong prop names,
+mismatched shapes) that neither ESLint's `no-undef` nor the current tests are positioned
+to catch structurally.
 
 **Do not** turn this into a "winning" app. Do not lead with annualized yield, win-rate, or
 "X% of puts expire worthless." Do not hide, net, or downplay losses. Do not add streak

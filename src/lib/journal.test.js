@@ -51,6 +51,14 @@ describe("entryBadWeekPnl", () => {
     expect(pnl).toBeLessThan(0);
   });
 
+  it("returns null instead of NaN when collateral is known but putPrem is missing", () => {
+    // Regression case: collateral was persisted on the entry but putPrem
+    // wasn't (or was stripped), so stratPnl would compute NaN. The UI must
+    // show '—', never a literal '$NaN'.
+    const e = { mode: "put", putStrike: 50, collateral: 5000, contracts: 1 };
+    expect(entryBadWeekPnl(e, 20)).toBeNull();
+  });
+
   it("stays finite for a spread entry that does have its long leg recorded", () => {
     const e = { mode: "spread", putStrike: 50, putPrem: 2, longStrike: 45, longPrem: 1, contracts: 1 };
     expect(Number.isFinite(entryBadWeekPnl(e, 20))).toBe(true);
