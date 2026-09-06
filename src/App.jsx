@@ -5,10 +5,20 @@ import { popFromDelta, expectedMove, cushionSigma, popPlain, cushionPlain } from
 import { richnessSignal } from "./lib/richness.js";
 import { opportunityScore, scoreGrade, autopilotChecks, marketCondition as computeMarketCondition } from "./lib/score.js";
 import { analyzeStock, technicalGrade, stockChecks, technicalMarketCondition } from "./lib/technicals.js";
+import { num, trimNum, money, money2, moneySigned, formatExp } from "./lib/format.js";
+import { today, defaultExpiration, targetExpiration, computeDte, entryDaysTo, weekStartIso, weekLabel } from "./lib/dates.js";
+import { roundStrike, round2, spreadWidthFor, stratPnl, legLabel, buildModel } from "./lib/pnl.js";
+import { entryCollateral, entryRiskNote, entryBadWeekPnl, summarizeWeek } from "./lib/journal.js";
 
 const STORAGE_KEY = "csp_visualizer_inputs_v1";
 const JOURNAL_KEY = "csp_journal_v1";
 const TOUR_KEY = "csp_tour_done_v1";
+
+// Tastytrade talks to the LIVE production API (api.tastyworks.com) — there is
+// no sandbox/paper mode. The acknowledgment below has to be re-confirmed on a
+// schedule (not just once, ever) so it can't be forgotten after a long gap.
+const TASTY_LIVE_ACK_KEY = "tasty_live_ack_at";
+const TASTY_LIVE_ACK_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 function buildTourSteps(ticker, inputs, model) {
   const company = COMPANIES.find((c) => c.ticker === ticker);
@@ -261,45 +271,6 @@ const MODES = [
   { key: "covered", label: "Covered strangle" },
 ];
 
-function roundStrike(p) {
-  if (p >= 200) return Math.round(p / 5) * 5;
-  if (p >= 25) return Math.round(p);
-  return Math.round(p * 2) / 2;
-}
-
-function round2(n) {
-  return Math.round(n * 100) / 100;
-}
-
-// Nearest Friday at least 7 days out — a sensible default option expiration.
-function defaultExpiration() {
-  const d = new Date();
-  const add = ((5 - d.getDay() + 7) % 7) || 7;
-  d.setDate(d.getDate() + Math.max(add, 7));
-  return d.toISOString().slice(0, 10);
-}
-
-// Nearest Friday at least `targetDays` out — for daily picks (~30 DTE sweet spot).
-function targetExpiration(targetDays = 30) {
-  const d = new Date();
-  d.setDate(d.getDate() + targetDays);
-  const toFri = (5 - d.getDay() + 7) % 7;
-  d.setDate(d.getDate() + toFri);
-  return d.toISOString().slice(0, 10);
-}
-
-function computeDte(iso) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return 30;
-  return Math.max(1, Math.round((new Date(iso + "T12:00:00Z") - Date.now()) / 86400000));
-}
-
-// Spread width based on price tier (standard option strike increments)
-function spreadWidthFor(price) {
-  if (price < 20) return 1;
-  if (price < 50) return 2.5;
-  return 5;
-}
-
 const DEFAULTS = {
   mode: "put",
   strike: 50,
@@ -333,81 +304,6 @@ function loadJournal() {
   } catch {
     return [];
   }
-}
-
-function today() {
-  return new Date().toISOString().slice(0, 10);
-}
-
-const money = (n) =>
-  n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
-
-const money2 = (n) =>
-  n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 });
-
-const moneySigned = (n) => (n > 0 ? "+" : n < 0 ? "−" : "") + money(Math.abs(n));
-
-function formatExp(iso) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return iso || "[expiration]";
-  const [y, m, d] = iso.split("-").map(Number);
-  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-  return `${months[m - 1]} ${d}, ${y}`;
-}
-
-// --- core strategy P&L at expiration, per share, × shares ---
-function stratPnl(S, p) {
-  const putLeg = p.putPrem - Math.max(0, p.putStrike - S);
-  if (p.mode === "put") return putLeg * p.shares;
-  if (p.mode === "spread") {
-    // sell short put, buy long put below it — loss is capped at spread width
-    const longLeg = -p.longPrem + Math.max(0, p.longStrike - S);
-    return (putLeg + longLeg) * p.shares;
-  }
-  const callLeg = p.callPrem - Math.max(0, S - p.callStrike);
-  if (p.mode === "strangle") return (putLeg + callLeg) * p.shares;
-  return (S - p.spot + putLeg + callLeg) * p.shares; // covered
-}
-
-// --- journal-entry helpers shared by the portfolio view and weekly report ---
-// Collateral / max-defined-risk for a logged entry. Uses the stored value
-// when present (entries logged after this field was added) and reconstructs
-// it for older entries. Returns null when risk is genuinely uncapped (a
-// naked strangle) or unreconstructable (an old spread entry logged before
-// its long leg was persisted) — callers must not treat null as zero.
-function entryCollateral(e) {
-  if (e.collateral != null) return e.collateral;
-  const shares = (e.contracts || 0) * 100;
-  if (e.mode === "put") return e.putStrike * shares;
-  if (e.mode === "covered") return e.putStrike * shares + e.spot * shares;
-  if (e.mode === "spread" && e.longStrike != null) return Math.max(0, e.putStrike - e.longStrike) * shares;
-  return null;
-}
-
-function entryRiskNote(e) {
-  if (entryCollateral(e) != null) return null;
-  if (e.mode === "strangle") return "Naked strangle — no defined max loss.";
-  if (e.mode === "spread") return "Long strike wasn't recorded on this older entry — can't reconstruct.";
-  return "Risk not computable for this entry.";
-}
-
-// P&L if the underlying drops dropPct% from the short strike by expiration.
-// Returns null wherever entryCollateral does, for the same reason.
-function entryBadWeekPnl(e, dropPct) {
-  if (entryCollateral(e) == null) return null;
-  const shares = (e.contracts || 0) * 100;
-  const p = {
-    mode: e.mode, putStrike: e.putStrike, putPrem: e.putPrem,
-    longStrike: e.longStrike, longPrem: e.longPrem,
-    callStrike: e.callStrike, callPrem: e.callPrem, spot: e.spot, shares,
-  };
-  const badPrice = e.putStrike * (1 - dropPct / 100);
-  return stratPnl(badPrice, p);
-}
-
-// Signed days until an ISO date — negative means it's already past.
-function entryDaysTo(iso) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso || "")) return null;
-  return Math.round((new Date(iso + "T12:00:00Z") - Date.now()) / 86400000);
 }
 
 export default function App() {
@@ -950,233 +846,6 @@ export default function App() {
   );
 }
 
-// ---------- model builder: one place, all modes ----------
-function buildModel(p, dropPct) {
-  const { mode, putStrike, longStrike, callStrike, spot, shares, iv, dte } = p;
-
-  const credit =
-    mode === "spread"
-      ? (p.putPrem - p.longPrem) * shares
-      : mode === "put"
-      ? p.putPrem * shares
-      : (p.putPrem + p.callPrem) * shares;
-
-  const collateral =
-    mode === "spread"
-      ? Math.max(0, putStrike - longStrike) * shares
-      : putStrike * 100 * (shares / 100) + (mode === "covered" ? spot * 100 * (shares / 100) : 0);
-
-  let maxGain;
-  if (mode === "put") maxGain = p.putPrem * shares;
-  else if (mode === "spread") maxGain = (p.putPrem - p.longPrem) * shares;
-  else if (mode === "strangle") maxGain = (p.putPrem + p.callPrem) * shares;
-  else maxGain = (callStrike - spot + p.putPrem + p.callPrem) * shares;
-
-  const move = dropPct / 100;
-  const moveLbl = trimNum(dropPct);
-
-  // σ-anchored scenario prices when IV is available, else fall back to dropPct
-  const hasIv = iv > 0 && dte > 0;
-  const T = (dte || 30) / 365;
-  const sigma1 = hasIv ? spot * iv * Math.sqrt(T) : 0;
-
-  const down1Price = hasIv ? Math.max(0.01, spot - sigma1) : putStrike * (1 - move);
-  const down2Price = hasIv ? Math.max(0.01, spot - 2 * sigma1) : putStrike * (1 - move * 1.5);
-  const upPrice = (mode === "put" || mode === "spread" ? putStrike : callStrike) * (1 + move);
-  const flatPrice =
-    mode === "covered" ? spot
-    : mode === "strangle" ? (putStrike + callStrike) / 2
-    : putStrike;
-
-  const down1Pnl = stratPnl(down1Price, p);
-  const down2Pnl = stratPnl(down2Price, p);
-  const flatPnl = stratPnl(flatPrice, p);
-  const upPnl = stratPnl(upPrice, p);
-  const midPnl = mode === "spread" ? stratPnl((putStrike + longStrike) / 2, p) : null;
-
-  // Labels for σ scenarios
-  const down1Lbl = hasIv
-    ? `1σ drop → ${money2(down1Price)}`
-    : `−${moveLbl}% → ${money2(down1Price)}`;
-  const down2Lbl = hasIv
-    ? `2σ drop → ${money2(down2Price)}`
-    : `−${trimNum(dropPct * 1.5)}% → ${money2(down2Price)}`;
-
-  const scenarios =
-    mode === "spread"
-      ? [
-          {
-            key: "down",
-            title: "Falls below long strike",
-            sub: `below ${money2(longStrike)} · max loss`,
-            pnl: stratPnl(longStrike * 0.97, p),
-            isWorst: true,
-            note: `Both puts are deep in the money. Your long put offsets the short put exactly — loss is capped here. You can't lose more than ${money2(Math.max(0, putStrike - longStrike) - (p.putPrem - p.longPrem))} per share no matter how far it falls.`,
-          },
-          {
-            key: "flat",
-            title: "Stays above short strike",
-            sub: `above ${money2(putStrike)} · max profit`,
-            pnl: flatPnl,
-            note: "Both puts expire worthless. You keep the full net credit — this is the best case.",
-          },
-          {
-            key: "between",
-            title: "Lands between the strikes",
-            sub: `between ${money2(longStrike)} and ${money2(putStrike)}`,
-            pnl: midPnl,
-            note: "The short put is in the money but the long put isn't fully offsetting yet. Partial loss — worse than the flat case, better than max loss.",
-          },
-        ]
-      : mode === "strangle"
-      ? [
-          {
-            key: "up",
-            title: "If it runs up",
-            sub: `+${moveLbl}% · call loses, no ceiling`,
-            pnl: upPnl,
-            isWorst: true,
-            note: "The naked call bites. This loss keeps growing the higher it goes — there is no ceiling. This is the scenario the ads skip.",
-          },
-          {
-            key: "down",
-            title: hasIv ? "1σ drop" : "If it falls",
-            sub: down1Lbl,
-            pnl: down1Pnl,
-            isWorst: down1Pnl < 0,
-            note: "Put goes in the money. Call expires worthless. Loss depends on how far below the put strike it closes.",
-          },
-          {
-            key: "flat",
-            title: "Stays between strikes",
-            sub: `between ${money2(putStrike)} and ${money2(callStrike)}`,
-            pnl: flatPnl,
-            note: "Both options expire worthless — you keep both premiums. This is the sweet spot.",
-          },
-        ]
-      : [
-          {
-            key: "down2",
-            title: hasIv ? "2σ drop (tail risk)" : "Bad drop",
-            sub: down2Lbl,
-            pnl: down2Pnl,
-            isWorst: true,
-            note: mode === "covered"
-              ? "Shares lose value AND you're assigned on the put — double the downside. This is the case to size for, not the premium."
-              : `Assigned well below breakeven. ${hasIv ? "A 2σ move is uncommon but not rare — it happens." : "The side the ads skip."}`,
-          },
-          {
-            key: "down1",
-            title: hasIv ? "1σ drop (expected move)" : "Mild drop",
-            sub: down1Lbl,
-            pnl: down1Pnl,
-            isWorst: down1Pnl < 0,
-            note: hasIv
-              ? `This is exactly the move the options market "expects" — about a 16% chance of closing here or lower. ${down1Pnl >= 0 ? "Your breakeven is below this level — you still profit." : "Your breakeven is above this — already a loss."}`
-              : "A moderate drop tests the breakeven.",
-          },
-          {
-            key: "flat",
-            title: "Stays above strike",
-            sub: "put expires worthless",
-            pnl: flatPnl,
-            note: "Best case — you keep the full premium and the collateral is released.",
-          },
-        ];
-
-  // "What would have to happen to lose" — computed from first breakeven
-  let loseCondition = null;
-  let probProfit = null;
-
-  // chart range
-  let xMin, xMax;
-  if (mode === "spread") {
-    xMin = longStrike * 0.82;
-    xMax = putStrike * 1.15;
-  } else if (mode === "put") {
-    xMin = Math.min(down2Price, putStrike * 0.7);
-    xMax = putStrike * 1.15;
-  } else {
-    xMin = Math.min(down2Price, putStrike * 0.6);
-    xMax = Math.max(upPrice, callStrike * 1.35);
-  }
-
-  const N = 160;
-  const samples = [];
-  for (let i = 0; i <= N; i++) {
-    const x = xMin + ((xMax - xMin) * i) / N;
-    samples.push([x, stratPnl(x, p)]);
-  }
-
-  // breakevens via zero-crossings
-  const breakevens = [];
-  for (let i = 1; i < samples.length; i++) {
-    const [x0, y0] = samples[i - 1];
-    const [x1, y1] = samples[i];
-    if ((y0 <= 0 && y1 > 0) || (y0 >= 0 && y1 < 0)) {
-      if (y1 !== y0) breakevens.push(round2(x0 + (-y0 / (y1 - y0)) * (x1 - x0)));
-    }
-  }
-  const breakevenLabel = breakevens.length ? breakevens.map((b) => money2(b)).join(" / ") : "—";
-
-  // "What would have to happen to lose" — computed from first breakeven on the put side
-  if (breakevens.length > 0 && spot > 0) {
-    const be = breakevens[0]; // lowest breakeven (put side)
-    const pctDrop = ((spot - be) / spot) * 100;
-    if (pctDrop > 0) {
-      if (hasIv && sigma1 > 0) {
-        const sigmas = (spot - be) / sigma1;
-        const prob = normCdf(sigmas);
-        probProfit = Math.round(prob * 10) / 10;
-        const losePct = Math.round((1 - prob) * 1000) / 10;
-        loseCondition = `You lose money only if ${p.ticker || "the stock"} drops more than ${pctDrop.toFixed(1)}% by expiration. At current IV (${(iv * 100).toFixed(0)}%) that's a ${sigmas.toFixed(1)}σ move — the market prices this as a ${losePct}% chance.`;
-      } else {
-        loseCondition = `You lose money only if the stock drops more than ${pctDrop.toFixed(1)}% by expiration. Pull a live premium to see the IV-based probability.`;
-      }
-    }
-  }
-
-  // chart markers and dots
-  const markers =
-    mode === "spread"
-      ? [
-          { x: longStrike, label: `long ${money2(longStrike)}` },
-          { x: putStrike, label: `short ${money2(putStrike)}` },
-        ]
-      : [{ x: putStrike, label: `put ${money2(putStrike)}` }];
-  if (mode === "strangle" || mode === "covered") markers.push({ x: callStrike, label: `call ${money2(callStrike)}` });
-
-  const dots =
-    mode === "spread"
-      ? [
-          { x: longStrike * 0.97, y: stratPnl(longStrike * 0.97, p) },
-          { x: (putStrike + longStrike) / 2, y: midPnl },
-        ]
-      : [{ x: down1Price, y: down1Pnl }, ...(hasIv ? [{ x: down2Price, y: down2Pnl }] : [])];
-  if (mode === "strangle" || mode === "covered") dots.push({ x: upPrice, y: upPnl });
-
-  // stat strip — max loss first
-  let worstLabel, worstValue;
-  if (mode === "strangle") {
-    worstLabel = `Loss if +${moveLbl}% (no ceiling)`;
-    worstValue = money(upPnl);
-  } else if (mode === "spread") {
-    const maxLoss = stratPnl(longStrike * 0.97, p);
-    worstLabel = "Max possible loss";
-    worstValue = money(maxLoss);
-  } else {
-    worstLabel = hasIv ? "Loss at 2σ drop" : `Loss on −${moveLbl}% drop`;
-    worstValue = money(down2Pnl);
-  }
-
-  return {
-    mode, credit, collateral, maxGain, samples, xMin, xMax,
-    markers, dots, scenarios, breakevens, breakevenLabel,
-    worstLabel, worstValue, down1Pnl, down2Pnl, upPnl,
-    loseCondition, probProfit, hasIv, iv, dte, spot,
-  };
-}
-
 function Chart({ model }) {
   const W = 720;
   const H = 380;
@@ -1649,11 +1318,6 @@ function Ticket({ mode, ticker, expiration, putStrike, putPrem, longStrike, long
       )}
     </section>
   );
-}
-
-function legLabel(e) {
-  if (e.mode === "put") return `${money2(e.putStrike)}P`;
-  return `${money2(e.putStrike)}P / ${money2(e.callStrike)}C`;
 }
 
 function Journal({ journal, onLog, onClose, onDelete }) {
@@ -2376,12 +2040,30 @@ function buildTastyOrder({ mode, ticker, expiration, putStrike, putPrem, longStr
 
 // ─── Tastytrade: connect widget ────────────────────────────────────────────────
 
+function loadTastyAckAt() {
+  try {
+    const raw = localStorage.getItem(TASTY_LIVE_ACK_KEY);
+    return raw ? parseInt(raw, 10) : null;
+  } catch { return null; }
+}
+
 function TastyConnect({ tasty, onConnect, onDisconnect }) {
   const [open, setOpen] = useState(false);
+  const [ackAt, setAckAt] = useState(loadTastyAckAt);
+  const [ackChecked, setAckChecked] = useState(false);
   const [login, setLogin] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+
+  const needsAck = !ackAt || (Date.now() - ackAt) > TASTY_LIVE_ACK_TTL_MS;
+
+  function acknowledge() {
+    const now = Date.now();
+    try { localStorage.setItem(TASTY_LIVE_ACK_KEY, String(now)); } catch {}
+    setAckAt(now);
+    setAckChecked(false);
+  }
 
   async function connect() {
     if (!login || !password) return;
@@ -2427,7 +2109,12 @@ function TastyConnect({ tasty, onConnect, onDisconnect }) {
         boxShadow: "0 2px 12px rgba(0,0,0,0.10)",
       }}>
         <div>
-          <div style={{ fontWeight: 700, color: "#16a34a" }}>✓ Tastytrade connected</div>
+          <div style={{ fontWeight: 700, color: "#16a34a" }}>
+            ✓ Tastytrade connected{" "}
+            <span style={{ color: "#fff", background: "#e14c4c", borderRadius: 4, padding: "1px 6px", fontSize: 10, letterSpacing: "0.04em", marginLeft: 2 }}>
+              LIVE
+            </span>
+          </div>
           <div style={{ color: "#475569" }}>{tasty.nickname} · BP: {money(tasty.buyingPower)}</div>
         </div>
         <button type="button" onClick={onDisconnect} style={{ background: "none", border: "none", color: "#94a3b8", fontSize: 11, cursor: "pointer", textDecoration: "underline" }}>
@@ -2439,13 +2126,48 @@ function TastyConnect({ tasty, onConnect, onDisconnect }) {
 
   return (
     <div style={{ position: "fixed", bottom: 84, right: 24, zIndex: 150 }}>
-      {open && (
+      {open && needsAck && (
+        <div style={{
+          marginBottom: 8, background: "#fff", border: "1.5px solid #fecaca",
+          borderRadius: 14, padding: 18, width: 300,
+          boxShadow: "0 8px 32px rgba(0,0,0,0.14)",
+        }}>
+          <div style={{ fontWeight: 700, fontSize: 14, color: "#991b1b", marginBottom: 8 }}>
+            ⚠ This is live trading, not a demo
+          </div>
+          <div style={{ fontSize: 12.5, color: "#475569", lineHeight: 1.6, marginBottom: 12 }}>
+            Connecting talks to Tastytrade's <b>production</b> API. There is no paper/sandbox mode —
+            any order you place from this app trades <b>real money</b> in your real account. Everything
+            else in this app (the calculator, journal, scans, reports) works fully without ever connecting this.
+          </div>
+          <label style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 12, color: "#0f172a", marginBottom: 14, cursor: "pointer" }}>
+            <input type="checkbox" checked={ackChecked} onChange={(e) => setAckChecked(e.target.checked)} style={{ marginTop: 2 }} />
+            <span>I understand this places real orders with real money, and there is no practice mode.</span>
+          </label>
+          <button
+            type="button" onClick={acknowledge} disabled={!ackChecked}
+            style={{
+              width: "100%", padding: "10px 0", background: ackChecked ? "#991b1b" : "#e2e8f0",
+              color: ackChecked ? "#fff" : "#94a3b8", border: "none", borderRadius: 8, fontSize: 13,
+              fontWeight: 700, cursor: ackChecked ? "pointer" : "default", marginBottom: 8,
+            }}
+          >
+            I understand, continue
+          </button>
+          <button type="button" onClick={() => setOpen(false)} style={{ width: "100%", padding: "8px 0", background: "none", border: "none", color: "#94a3b8", fontSize: 12, cursor: "pointer" }}>
+            Cancel
+          </button>
+        </div>
+      )}
+      {open && !needsAck && (
         <div style={{
           marginBottom: 8, background: "#fff", border: "1px solid #e2e8f0",
           borderRadius: 14, padding: 18, width: 280,
           boxShadow: "0 8px 32px rgba(0,0,0,0.14)",
         }}>
-          <div style={{ fontWeight: 700, fontSize: 14, color: "#0f172a", marginBottom: 4 }}>Connect Tastytrade</div>
+          <div style={{ fontWeight: 700, fontSize: 14, color: "#0f172a", marginBottom: 4 }}>
+            Connect Tastytrade <span style={{ color: "#e14c4c", fontSize: 11 }}>(live)</span>
+          </div>
           <div style={{ fontSize: 12, color: "#64748b", marginBottom: 14 }}>
             Your password is never stored — only a session token.
           </div>
@@ -2496,6 +2218,8 @@ function TastyOrderConfirm({ order, tasty, onClose, onRefreshSession }) {
   const [dryRunResult, setDryRunResult] = useState(null);
   const [orderId, setOrderId] = useState(null);
   const [err, setErr] = useState(null);
+  const [confirmText, setConfirmText] = useState("");
+  const confirmed = confirmText.trim().toUpperCase() === "PLACE";
 
   const tastyOrder = buildTastyOrder(order);
   const credit = parseFloat(tastyOrder.price);
@@ -2611,12 +2335,21 @@ function TastyOrderConfirm({ order, tasty, onClose, onRefreshSession }) {
               ⚠ This places a real order with real money in your Tastytrade account. Double-check the details above.
             </div>
 
+            <label style={{ display: "block", fontSize: 12, color: "#64748b", marginBottom: 6 }}>
+              Type <b>PLACE</b> to confirm
+            </label>
+            <input
+              type="text" value={confirmText} onChange={(e) => setConfirmText(e.target.value)}
+              placeholder="PLACE" autoComplete="off"
+              style={{ width: "100%", border: "1px solid #e2e8f0", borderRadius: 8, padding: "9px 10px", fontSize: 14, marginBottom: 12, boxSizing: "border-box", textAlign: "center", letterSpacing: "0.08em", fontWeight: 700 }}
+            />
+
             <button
-              type="button" onClick={placeOrder}
+              type="button" onClick={placeOrder} disabled={!confirmed}
               style={{
-                width: "100%", padding: "13px 0", background: "#16a34a",
-                color: "#fff", border: "none", borderRadius: 10,
-                fontSize: 15, fontWeight: 700, cursor: "pointer", marginBottom: 10,
+                width: "100%", padding: "13px 0", background: confirmed ? "#16a34a" : "#e2e8f0",
+                color: confirmed ? "#fff" : "#94a3b8", border: "none", borderRadius: 10,
+                fontSize: 15, fontWeight: 700, cursor: confirmed ? "pointer" : "default", marginBottom: 10,
               }}
             >
               Yes — Place This Order
@@ -2988,33 +2721,6 @@ function PortfolioView({ journal, dropPct, onOpenJournal }) {
 // ─── Elena's report — realized performance, grouped by week ──────────────
 // No streaks, no confetti, no leading with win rate. Losses are shown with
 // exactly the same weight as gains, same as the journal they're drawn from.
-
-function weekStartIso(dateStr) {
-  const d = new Date(dateStr + "T12:00:00Z");
-  const diffToMonday = (d.getUTCDay() + 6) % 7;
-  d.setUTCDate(d.getUTCDate() - diffToMonday);
-  return d.toISOString().slice(0, 10);
-}
-
-function weekLabel(mondayIso) {
-  const start = new Date(mondayIso + "T12:00:00Z");
-  const end = new Date(start);
-  end.setUTCDate(end.getUTCDate() + 6);
-  const fmt = (d) => d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
-  return `${fmt(start)}–${fmt(end)}, ${start.getUTCFullYear()}`;
-}
-
-function summarizeWeek(entries) {
-  const wins = entries.filter((e) => e.realizedPnl >= 0);
-  const losses = entries.filter((e) => e.realizedPnl < 0);
-  const realized = entries.reduce((s, e) => s + e.realizedPnl, 0);
-  const worst = losses.reduce((m, e) => Math.min(m, e.realizedPnl), 0);
-  const withCollateral = entries.map((e) => ({ e, c: entryCollateral(e) })).filter((x) => x.c);
-  const avgReturnPct = withCollateral.length
-    ? (withCollateral.reduce((s, x) => s + x.e.realizedPnl / x.c, 0) / withCollateral.length) * 100
-    : null;
-  return { count: entries.length, wins, losses, realized, worst, avgReturnPct };
-}
 
 function WeeklyReport({ journal }) {
   const closed = journal.filter((e) => e.status === "closed" && /^\d{4}-\d{2}-\d{2}$/.test(e.closedAt || ""));
@@ -3641,15 +3347,6 @@ function Stat({ label, value, tone, big }) {
       <div style={{ ...styles.statValue, color, fontSize: big ? 24 : undefined }}>{value}</div>
     </div>
   );
-}
-
-function num(v) {
-  const n = parseFloat(v);
-  return Number.isFinite(n) ? n : 0;
-}
-
-function trimNum(n) {
-  return Number.isInteger(n) ? n : Math.round(n * 10) / 10;
 }
 
 const keyframes = `
