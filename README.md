@@ -35,7 +35,7 @@ same shape a small trading desk actually runs:
 
 All of this reads from the same trade journal, which lives in `localStorage` and,
 optionally, an actual database (see **Backing up the journal** below) so it survives
-clearing browser data. The one live-trading path in the app (`api/tasty.js`, tastytrade
+clearing browser data. The one live-trading path in the app (`api/tasty.ts`, tastytrade
 order placement) is untouched by any of the above; those views are read/aggregate-only,
 and connecting it now requires reading an explicit live-trading warning first (see
 **A note on the tastytrade integration**).
@@ -49,8 +49,8 @@ npm run dev
 
 Then open the local address it prints (usually http://localhost:5173).
 
-Stack: Vite + React, plus two tiny Vercel Edge functions (`api/quote.js`,
-`api/option.js`).
+Stack: Vite + React, plus two tiny Vercel Edge functions (`api/quote.ts`,
+`api/option.ts`).
 
 **On data and privacy:** the calculator itself runs entirely in your browser and
 your inputs never leave your machine. The exception is the optional **Company**
@@ -84,7 +84,7 @@ locally, run `vercel dev` instead of `npm run dev`.
 
 By default the trade journal — your only record of what you actually traded — lives
 solely in this browser's `localStorage`. Clear site data, or open the app on a different
-device, and it's gone. `api/journal.js` adds an optional durable backup on Cloudflare D1;
+device, and it's gone. `api/journal.ts` adds an optional durable backup on Cloudflare D1;
 without setting it up, everything behaves exactly as before.
 
 **One-time setup:**
@@ -115,14 +115,14 @@ without setting it up, everything behaves exactly as before.
    step 3 as the sync key.
 
 That's it — once a key is entered client-side, the journal round-trips to the database
-(full-replace sync, not incremental — see the comment atop `api/journal.js`) and a small
+(full-replace sync, not incremental — see the comment atop `api/journal.ts`) and a small
 status badge shows whether the last sync succeeded, failed, or the backup isn't configured
 at all. Losing the connection just falls back to the local copy, same as every other
 optional integration in this app.
 
 ## A note on the tastytrade integration
 
-`api/tasty.js` and the "Connect Tastytrade" button talk to tastytrade's **live production
+`api/tasty.ts` and the "Connect Tastytrade" button talk to tastytrade's **live production
 API** — there is no sandbox/paper mode. Nothing else in this app touches it: the calculator,
 journal, scans, and reports all work fully without ever connecting it. If you don't
 actually place real orders through this, there's no reason to connect it at all.
@@ -136,47 +136,58 @@ all that stood between the confirm screen and a real order.
 
 ```
 src/
-  App.jsx                 top-level state + tab switching (~600 lines)
-  appConstants.js         storage keys, COMPANIES/MODES/DEFAULTS, load*() helpers
-  styles.js               the shared inline-style object + keyframes
-  lib/                    pure logic — no React, all unit-tested
-    blackScholes.js  probability.js  richness.js  score.js  technicals.js
-    pnl.js  journal.js  dates.js  format.js  tastyOrder.js
-  components/             one file per view/widget (Chart, Journal, Screener,
-                           AlexScan, PortfolioView, WeeklyReport, DayReview,
-                           Tastytrade, JournalSync, TodayView, Tour, LearnView, …)
-api/                       Vercel Edge functions (quote, option, history, earnings,
-                           morning, analyze, chat, lesson, tasty, journal)
+  App.tsx                  top-level state + tab switching (~650 lines)
+  types.ts                 shared domain types (Mode, JournalEntry, PnlModel, …)
+  appConstants.ts          storage keys, COMPANIES/MODES/DEFAULTS, load*() helpers
+  styles.ts                the shared inline-style object + keyframes
+  lib/                     pure logic — no React, all unit-tested
+    blackScholes.ts  probability.ts  richness.ts  score.ts  technicals.ts
+    pnl.ts  journal.ts  dates.ts  format.ts  tastyOrder.ts
+  components/              one file per view/widget (Chart, Journal, Screener,
+                            AlexScan, PortfolioView, WeeklyReport, DayReview,
+                            Tastytrade, JournalSync, TodayView, Tour, LearnView, …)
+api/                        Vercel Edge functions (quote, option, history, earnings,
+                            morning, analyze, chat, lesson, tasty, journal)
 ```
 
 `App.jsx` used to be a single ~4,000-line file holding every component; it's now split
 by feature, matching the app's own tabs. `src/lib/` holds everything with no React
-dependency, which is what makes it unit-testable without rendering anything.
+dependency, which is what makes it unit-testable without rendering anything. The whole
+tree is TypeScript now (`strict: true`) — see **Since then** below.
 
 ## Running the tests and linter
 
 ```bash
-npm test    # Vitest — 229 tests: every pure module in src/lib/, api/journal.js,
-            # and every component in src/components/ (React Testing Library)
-npm run lint  # ESLint — no-undef (catches a missing import immediately) + react-hooks rules
+npm test          # Vitest — 229 tests: every pure module in src/lib/, api/journal.ts,
+                  # and every component in src/components/ (React Testing Library)
+npm run typecheck # tsc --noEmit — the primary safety net now (strict: true)
+npm run lint      # ESLint — react-hooks rules (rules-of-hooks, exhaustive-deps)
 ```
 
-`no-undef` is doing real work here: this project has no build-time type checking, so it's
-the cheapest guard against a component silently referencing something that was never
-imported — exactly the class of bug a file split like this one is most likely to introduce
-(it caught three on the first pass). The component tests caught two more real bugs of a
-different kind on their first pass: `entryBadWeekPnl` could render a literal `"$NaN"` in
-Sarah's book for an entry missing `putPrem`, and `AssignmentView`'s mode-specific note was
-a plain object literal that eagerly evaluated *all four* branches on every render —
-including `money2(longStrike)` for non-spread modes, where `longStrike` is `undefined` —
-crashing the whole card. Both are fixed and covered by regression tests now.
+`tsc --noEmit` is doing the heavy lifting now: every component has a real prop-type
+interface, and the compiler catches a wrong shape or a typo'd prop name before it ever
+reaches a test, let alone production. Before the TypeScript migration, ESLint's `no-undef`
+was standing in for that — the cheapest guard against a component silently referencing
+something that was never imported — and it did catch three missing-import bugs on the
+first pass of the original file split. `no-undef` is retired now (redundant with what
+`tsc` already guarantees, and prone to false positives on TS-only constructs); ESLint's
+job has narrowed to what the type checker doesn't check — the react-hooks rules — parsed
+via `@babel/eslint-parser` rather than `typescript-eslint`, which as of this writing
+doesn't support the TypeScript version this project pins (see `eslint.config.js`).
+
+The component tests caught two more real bugs of a different kind on their first pass:
+`entryBadWeekPnl` could render a literal `"$NaN"` in Sarah's book for an entry missing
+`putPrem`, and `AssignmentView`'s mode-specific note was a plain object literal that
+eagerly evaluated *all four* branches on every render — including `money2(longStrike)`
+for non-spread modes, where `longStrike` is `undefined` — crashing the whole card. Both
+are fixed and covered by regression tests now.
 
 The two most safety-critical components — the tastytrade live-trading warning gate and the
 type-`PLACE`-to-confirm order screen — have dedicated test files
-(`Tastytrade.test.jsx`, `TastyOrderConfirm.test.jsx`) specifically to make it hard for
+(`Tastytrade.test.tsx`, `TastyOrderConfirm.test.tsx`) specifically to make it hard for
 either gate to regress back to "one click" without a test failing.
 
-CI (`.github/workflows/ci.yml`) runs lint, test, and build on every push and PR.
+CI (`.github/workflows/ci.yml`) runs lint, typecheck, test, and build on every push and PR.
 
 ## The math (so you can trust the curve)
 
@@ -219,7 +230,7 @@ ethos intact. Specifically:
    rather than starting a fresh position).
 
 New from the round that added Alex/Sarah/Elena: **🔭 Alex's scan** (a technical
-stock/ETF screener, `src/lib/technicals.js`) and **📈 Elena's report** (weekly
+stock/ETF screener, `src/lib/technicals.ts`) and **📈 Elena's report** (weekly
 aggregation, grouping closed trades by ISO week).
 
 **Since then**, in priority order (real money and data-loss risk first, polish last):
@@ -252,14 +263,21 @@ aggregation, grouping closed trades by ISO week).
 9. Component tests for every file in `src/components/` (106 new tests, 229 total), which
    caught two more real bugs on the first pass — see **Running the tests and linter**
    above for what they were and why "the build passed" hadn't caught them.
+10. Migrated the entire app to TypeScript (`strict: true`) — every `src/lib/` module,
+    every component (with a real prop-type interface each), `App.jsx` itself, and all
+    11 `api/` Edge functions. `entryCollateral`/`entryRiskNote`/`entryBadWeekPnl`/
+    `summarizeWeek` in `src/lib/journal.ts` now take `Partial<JournalEntry>` rather than
+    the full type — an honest reflection of what they actually do (tolerate incomplete
+    or legacy entries), not a hole punched in the type system to make tests compile.
+    ESLint's `no-undef` is retired (`tsc` supersedes it); `eslint.config.js` now parses
+    TS/TSX via `@babel/eslint-parser` instead of `typescript-eslint`, which doesn't yet
+    support the TypeScript version this project pins. `npm run typecheck` runs in CI
+    alongside lint/test/build.
 
 **Still open:** backtesting whether Alex's scan's scoring weights (ported as-is from
 `stock-coach`) actually predict anything — they're currently unvalidated against
 historical outcomes, and validating them needs a real deployment with live market-data
-keys, not something that can be done from a sandbox with no credentials. Also worth
-doing: migrating to TypeScript, which would catch a class of bug (wrong prop names,
-mismatched shapes) that neither ESLint's `no-undef` nor the current tests are positioned
-to catch structurally.
+keys, not something that can be done from a sandbox with no credentials.
 
 **Do not** turn this into a "winning" app. Do not lead with annualized yield, win-rate, or
 "X% of puts expire worthless." Do not hide, net, or downplay losses. Do not add streak
