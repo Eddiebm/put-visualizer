@@ -28,6 +28,7 @@ import { PortfolioView } from "./components/PortfolioView.jsx";
 import { WeeklyReport } from "./components/WeeklyReport.jsx";
 import { DayReview } from "./components/DayReview.jsx";
 import { LearnView } from "./components/LearnView.jsx";
+import { AssignmentView } from "./components/AssignmentView.jsx";
 
 export default function App() {
   const [inputs, setInputs] = useState(loadInputs);
@@ -202,6 +203,11 @@ export default function App() {
   const capital = num(inputs.capital);
   const iv = inputs.iv != null ? Number(inputs.iv) : null;
   const shares = contracts * 100;
+
+  // Volatility-based presets for the bad-week drop input — market IV preferred
+  // (it's forward-looking), realized vol as a fallback, so the drop % isn't
+  // just a guess when either is available.
+  const volForPresets = iv > 0 ? iv : rvol > 0 ? rvol : null;
 
   const dte = useMemo(() => {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(expiration)) return 30;
@@ -525,6 +531,35 @@ export default function App() {
           />
         </section>
 
+        {volForPresets > 0 && dte > 0 ? (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: -10, marginBottom: 18, fontSize: 12 }}>
+            <span style={{ color: "#94a3b8" }}>
+              {twoSided ? "Move size" : "Bad-week drop"} presets ({iv > 0 ? "market IV" : "realized vol"}):
+            </span>
+            {[1, 2].map((n) => {
+              const pct = Math.round(volForPresets * Math.sqrt(dte / 365) * n * 100 * 10) / 10;
+              return (
+                <button
+                  key={n}
+                  type="button"
+                  onClick={() => setInputs((s) => ({ ...s, dropPct: pct }))}
+                  style={{
+                    border: "1px solid #e2e8f0", borderRadius: 20, background: dropPct === pct ? "#1f2937" : "#f8fafc",
+                    color: dropPct === pct ? "#fff" : "#475569", fontSize: 12, fontWeight: 700,
+                    padding: "4px 12px", cursor: "pointer",
+                  }}
+                >
+                  {n}σ ({pct}%)
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <div style={{ fontSize: 11.5, color: "#94a3b8", marginTop: -10, marginBottom: 18 }}>
+            Pick a company or pull a live premium to enable volatility-based {twoSided ? "move size" : "drop"} presets — until then this is a manual guess.
+          </div>
+        )}
+
         <SizingHint
           mode={mode}
           capital={capital}
@@ -593,6 +628,17 @@ export default function App() {
             <Stat label="Prob. of profit (IV-implied)" value={`${model.probProfit}%`} tone="neutral" />
           )}
         </section>
+
+        <AssignmentView
+          mode={mode}
+          ticker={ticker}
+          putStrike={putStrike}
+          putPrem={putPrem}
+          longStrike={longStrike}
+          spot={spot}
+          contracts={contracts}
+          credit={model.credit}
+        />
 
         <Journal journal={journal} onLog={logTrade} onClose={closeTrade} onDelete={deleteTrade} />
         </>)}

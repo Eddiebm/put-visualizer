@@ -197,10 +197,14 @@ ethos intact. Specifically:
    Elena's report (avg. return on collateral next to worst single loss).
 3. ~~**Multiple positions / portfolio view**~~ — done as **Sarah's book**: total collateral
    locked and aggregate bad-week loss across every open position.
-4. **Implied "bad week" presets** — e.g. 1σ / 2σ moves from a volatility input, so the
-   bad-week drop isn't just a guess. *(still open)*
-5. **Assignment view** — what owning the shares at the strike would actually cost and look
-   like. *(still open)*
+4. ~~**Implied "bad week" presets**~~ — done: when market IV or realized vol is available,
+   1σ/2σ preset chips sit next to the drop-% field and fill it with the real expected-move
+   percentage for the current expiration, one click.
+5. ~~**Assignment view**~~ — done as the "If you get assigned" card below the trade stats:
+   shares owned, total cost, cost basis after premium, and current value vs. that cost
+   basis, with a mode-specific note (a spread's long put usually gets exercised same-day
+   instead of holding the shares; a covered strangle's assignment doubles the share count
+   rather than starting a fresh position).
 
 New from the round that added Alex/Sarah/Elena: **🔭 Alex's scan** (a technical
 stock/ETF screener, `src/lib/technicals.js`) and **📈 Elena's report** (weekly
@@ -226,14 +230,16 @@ aggregation, grouping closed trades by ISO week).
    as part of doing this safely — it caught three real missing-import bugs the split
    introduced (each verified against a running instance before/after). See **Project
    layout** above.
+6. Closed out the original roadmap's last two items — volatility-based bad-week presets
+   and the assignment view — both above. The underlying math for both lives in
+   `src/lib/pnl.js` (`assignmentSummary`) with its own unit tests.
 
-**Still open, lower priority than the above:** items 4-5 from the original roadmap list
-(volatility-based bad-week presets, an assignment view), and backtesting whether Alex's
-scan's scoring weights (ported as-is from `stock-coach`) actually predict anything —
-they're currently unvalidated against historical outcomes and need a real deployment
-with live market-data keys to run against. Also worth doing eventually: component-level
-tests (React Testing Library) — the pure logic in `src/lib/` is well-covered, but no test
-renders an actual component yet.
+**Still open:** backtesting whether Alex's scan's scoring weights (ported as-is from
+`stock-coach`) actually predict anything — they're currently unvalidated against
+historical outcomes, and validating them needs a real deployment with live market-data
+keys, not something that can be done from a sandbox with no credentials. Also worth doing
+eventually: component-level tests (React Testing Library) — the pure logic in `src/lib/`
+is well-covered, but no test renders an actual component yet.
 
 **Do not** turn this into a "winning" app. Do not lead with annualized yield, win-rate, or
 "X% of puts expire worthless." Do not hide, net, or downplay losses. Do not add streak

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { roundStrike, round2, spreadWidthFor, stratPnl, legLabel, buildModel } from "./pnl.js";
+import { roundStrike, round2, spreadWidthFor, stratPnl, legLabel, buildModel, assignmentSummary } from "./pnl.js";
 
 describe("roundStrike", () => {
   it("rounds high-priced stocks to the nearest $5", () => {
@@ -129,5 +129,38 @@ describe("buildModel", () => {
     const spread = { ...base, mode: "spread", longStrike: 45, longPrem: 1, putPrem: 2 };
     const m = buildModel(spread, 20);
     expect(m.collateral).toBeCloseTo(500); // (50-45)*100
+  });
+});
+
+describe("assignmentSummary", () => {
+  it("returns null when there's no real position (no strike or no contracts)", () => {
+    expect(assignmentSummary({ putStrike: 0, putPrem: 2, spot: 50, contracts: 1 })).toBeNull();
+    expect(assignmentSummary({ putStrike: 50, putPrem: 2, spot: 50, contracts: 0 })).toBeNull();
+  });
+
+  it("computes shares, total cost, and cost basis after premium", () => {
+    const s = assignmentSummary({ putStrike: 50, putPrem: 2, spot: 55, contracts: 2 });
+    expect(s.shares).toBe(200);
+    expect(s.totalCost).toBeCloseTo(10000); // 50 * 200
+    expect(s.costBasisPerShare).toBeCloseTo(48); // 50 - 2
+  });
+
+  it("shows a gain when spot is above cost basis, a loss when below", () => {
+    const up = assignmentSummary({ putStrike: 50, putPrem: 2, spot: 55, contracts: 1 });
+    const down = assignmentSummary({ putStrike: 50, putPrem: 2, spot: 40, contracts: 1 });
+    expect(up.gainLoss).toBeGreaterThan(0);
+    expect(down.gainLoss).toBeLessThan(0);
+  });
+
+  it("leaves gainLoss/currentValue null when there's no live spot price, rather than guessing", () => {
+    const s = assignmentSummary({ putStrike: 50, putPrem: 2, spot: 0, contracts: 1 });
+    expect(s.hasSpot).toBe(false);
+    expect(s.currentValue).toBeNull();
+    expect(s.gainLoss).toBeNull();
+  });
+
+  it("treats a missing premium as zero rather than throwing", () => {
+    const s = assignmentSummary({ putStrike: 50, putPrem: undefined, spot: 55, contracts: 1 });
+    expect(s.costBasisPerShare).toBe(50);
   });
 });

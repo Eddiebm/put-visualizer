@@ -36,6 +36,21 @@ export function stratPnl(S, p) {
   return (S - p.spot + putLeg + callLeg) * p.shares; // covered
 }
 
+// What owning the shares from a put assignment would actually cost and be
+// worth. Returns null when there isn't a real position to describe (no
+// strike or no contracts) — the caller should render nothing in that case.
+export function assignmentSummary({ putStrike, putPrem, spot, contracts }) {
+  if (!(putStrike > 0) || !(contracts > 0)) return null;
+  const shares = contracts * 100;
+  const totalCost = putStrike * shares;
+  const costBasisPerShare = putStrike - (putPrem || 0);
+  const costBasisValue = costBasisPerShare * shares;
+  const hasSpot = spot > 0;
+  const currentValue = hasSpot ? spot * shares : null;
+  const gainLoss = hasSpot ? currentValue - costBasisValue : null;
+  return { shares, totalCost, costBasisPerShare, currentValue, gainLoss, hasSpot };
+}
+
 export function legLabel(e) {
   if (e.mode === "put") return `${money2(e.putStrike)}P`;
   return `${money2(e.putStrike)}P / ${money2(e.callStrike)}C`;
