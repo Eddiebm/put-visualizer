@@ -1,0 +1,60 @@
+name: Backtest Alex's scan (manual)
+
+# On-demand only — this is a research tool, not part of the normal CI
+# pipeline. Reads the Tiingo API key from a repository secret
+# (TIINGO_API_KEY), never from a workflow input: this repo is public, and
+# a plain workflow_dispatch input value is visible in the run's summary to
+# anyone, forever. A repository secret is never printed to logs or shown
+# in the UI — GitHub redacts any log output matching its value. See
+# scripts/backtest/README usage notes in scripts/backtest/run.ts and the
+# "Backtesting Alex's scan" section of README.md for what this validates
+# and what it doesn't.
+on:
+  workflow_dispatch:
+    inputs:
+      years:
+        description: "Years of history"
+        required: false
+        default: "10"
+      tickers:
+        description: "Comma-separated tickers (blank = full COMPANIES watchlist)"
+        required: false
+        default: ""
+      horizons:
+        description: "Forward-return horizons, trading days"
+        required: false
+        default: "5,10,20"
+      stride:
+        description: "Evaluate every Nth eligible day"
+        required: false
+        default: "5"
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - name: Run backtest against Tiingo
+        env:
+          TIINGO_API_KEY: ${{ secrets.TIINGO_API_KEY }}
+        run: |
+          if [ -z "$TIINGO_API_KEY" ]; then
+            echo "::error::TIINGO_API_KEY repo secret is not set. Add it under Settings > Secrets and variables > Actions > New repository secret."
+            exit 1
+          fi
+          ARGS="--source=tiingo --years=${{ inputs.years }} --horizons=${{ inputs.horizons }} --stride=${{ inputs.stride }}"
+          if [ -n "${{ inputs.tickers }}" ]; then
+            ARGS="$ARGS --tickers=${{ inputs.tickers }}"
+          fi
+          npm run backtest:alex -- $ARGS
+      - name: Upload full results JSON
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest-results
+          path: scripts/backtest/last-run.json
+          if-no-files-found: ignore
