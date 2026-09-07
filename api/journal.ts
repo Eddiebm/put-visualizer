@@ -101,32 +101,53 @@ export default async function handler(req: Request): Promise<Response> {
       // not the other way around. The two operations touch disjoint rows
       // (delete only ever removes ids absent from the client's array, and
       // upsert only ever touches ids present in it), so the end state is
-      // identical either way once both succeed. But each is its own D1
-      // request, not one atomic transaction, so ordering matters if one
-      // fails partway: delete-then-upsert can leave FEWER rows than either
-      // journal ever had (a failed upsert after a successful delete loses
-      // data); upsert-then-delete can at worst leave a stale row or two
-      // temporarily (a failed delete after successful upserts), which the
-      // next sync cleans up — never fewer rows than intended.
-      // One D1 HTTP round-trip per entry either way, but sequentially that's
-      // up to 5000 round-trips end to end — easily enough to blow an edge
-      // function's execution limit on a real, months-old journal, breaking
-      // the sync this endpoint exists to provide. The upserts have no
-      // ordering dependency on each other (only "upserts before delete"
-      // above matters), so run each small batch concurrently instead of
-      // one at a time; bounded rather than a single unbounded Promise.all
-      // across the full (up to 5000-entry) array, so this doesn't fire an
-      // unbounded burst of simultaneous outbound requests.
+      // identical either way once both succeed. But the delete is still its
+      // own separate D1 request from the last upsert batch, not one atomic
+      // transaction spanning the whole sync, so ordering matters if it fails
+      // right after upserts succeed: delete-then-upsert can leave FEWER rows
+      // than either journal ever had (a failed upsert after a successful
+      // delete loses data); upsert-then-delete can at worst leave a stale
+      // row or two temporarily (a failed delete after successful upserts),
+      // which the next sync cleans up — never fewer rows than intended.
+      //
+      // Within a batch, though, this IS one atomic transaction: every
+      // upsert in the batch is sent as a single D1 request — one SQL string
+      // wrapped in BEGIN TRANSACTION/COMMIT, with all params concatenated
+      // in matching positional order — instead of the batch's entries each
+      // getting their own auto-committed statement. Standard SQLite
+      // transaction syntax, and D1 is documented as SQLite-compatible; this
+      // codebase's own d1() helper already expected `result` to be an
+      // array indexed per-statement (`result?.[0]`), consistent with the
+      // multi-statement-per-request shape this relies on. NOT verified
+      // against a live D1 database from this environment (no credentials
+      // available to test against) — if BEGIN/COMMIT inside one HTTP
+      // request turns out to be rejected by D1's HTTP API, the whole batch
+      // fails loudly (a normal D1 error, caught below and surfaced as a 502
+      // to the client) rather than silently writing a partial batch — a
+      // syntax-level rejection fails before any statement executes. Test a
+      // real sync end to end after deploying before trusting this shrinks
+      // the blast radius of a partial-write failure to a batch of
+      // UPSERT_BATCH_SIZE rather than a single row.
+      //
+      // One D1 HTTP round-trip per BATCH now (not per entry) — up to 5000
+      // entries is at most 200 requests instead of 5000, both reducing the
+      // edge-function execution-time risk this batching originally existed
+      // to solve, and (new) bounding a partial-write failure to at most
+      // UPSERT_BATCH_SIZE rows instead of one row at a time.
       const UPSERT_BATCH_SIZE = 25;
       for (let i = 0; i < body.entries.length; i += UPSERT_BATCH_SIZE) {
         const batch = body.entries.slice(i, i + UPSERT_BATCH_SIZE);
-        await Promise.all(batch.map((e) =>
-          d1(
+        const sql = ["BEGIN TRANSACTION;"];
+        const params: unknown[] = [];
+        for (const e of batch) {
+          sql.push(
             "INSERT INTO journal_entries (id, status, data, updated_at) VALUES (?, ?, ?, ?) " +
-              "ON CONFLICT(id) DO UPDATE SET status = excluded.status, data = excluded.data, updated_at = excluded.updated_at",
-            [String(e.id), String(e.status || "open"), JSON.stringify(e), now]
-          )
-        ));
+              "ON CONFLICT(id) DO UPDATE SET status = excluded.status, data = excluded.data, updated_at = excluded.updated_at;"
+          );
+          params.push(String(e.id), String(e.status || "open"), JSON.stringify(e), now);
+        }
+        sql.push("COMMIT;");
+        await d1(sql.join(" "), params);
       }
 
       // Delete anything server-side that's no longer in the client's array.

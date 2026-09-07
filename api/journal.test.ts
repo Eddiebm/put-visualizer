@@ -97,7 +97,7 @@ describe("api/journal — POST sync", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("issues one upsert per entry followed by a DELETE...NOT IN", async () => {
+  it("issues one transactional batch upsert call followed by a DELETE...NOT IN", async () => {
     setEnv();
     const calls: any[] = [];
     vi.stubGlobal("fetch", vi.fn(async (url: string, opts: { body: string }) => {
@@ -120,21 +120,31 @@ describe("api/journal — POST sync", () => {
 
     // Upserts run before the delete — a failed upsert then leaves the old
     // rows in place instead of losing data (see the comment in journal.ts).
-    expect(calls.length).toBe(3); // 2 upserts + 1 delete
-    expect(calls[0].sql).toMatch(/INSERT INTO journal_entries/);
-    expect(calls[0].sql).toMatch(/ON CONFLICT/);
-    expect(calls[1].sql).toMatch(/INSERT INTO journal_entries/);
-    expect(calls[1].sql).toMatch(/ON CONFLICT/);
-    expect(calls[2].sql).toMatch(/DELETE FROM journal_entries WHERE id NOT IN/);
-    expect(calls[2].params).toEqual(["e1", "e2"]);
+    // Both entries land in a single batch (well under UPSERT_BATCH_SIZE),
+    // so they're sent as ONE D1 request wrapped in an explicit transaction —
+    // not one request per entry.
+    expect(calls.length).toBe(2); // 1 combined upsert batch + 1 delete
+    expect(calls[0].sql).toMatch(/^BEGIN TRANSACTION;/);
+    expect(calls[0].sql).toMatch(/COMMIT;$/);
+    expect((calls[0].sql.match(/INSERT INTO journal_entries/g) || [])).toHaveLength(2);
+    expect((calls[0].sql.match(/ON CONFLICT/g) || [])).toHaveLength(2);
+    // Params are flat and positional across the whole multi-statement
+    // string: 4 per entry (id, status, data, updated_at), in order.
+    expect(calls[0].params).toHaveLength(8);
+    expect(calls[0].params[0]).toBe("e1");
+    expect(calls[0].params[4]).toBe("e2");
+
+    expect(calls[1].sql).toMatch(/DELETE FROM journal_entries WHERE id NOT IN/);
+    expect(calls[1].params).toEqual(["e1", "e2"]);
   });
 
-  it("upserts every entry across multiple concurrency batches, not just the first batch (regression)", async () => {
-    // Upserts run in bounded-concurrency batches now instead of one D1
-    // round-trip at a time, to avoid an edge-function timeout on a large
-    // real journal. 30 entries spans two batches at the current batch size
-    // (25) — this guards against an off-by-one that silently drops or
-    // duplicates entries at a batch boundary.
+  it("upserts every entry across multiple transaction batches, not just the first batch (regression)", async () => {
+    // Upserts run in bounded transactional batches now instead of one D1
+    // round-trip per entry, to avoid an edge-function timeout on a large
+    // real journal AND to make each batch atomic. 30 entries spans two
+    // batches at the current batch size (25) — this guards against an
+    // off-by-one that silently drops or duplicates entries at a batch
+    // boundary.
     setEnv();
     const calls: any[] = [];
     vi.stubGlobal("fetch", vi.fn(async (url: string, opts: { body: string }) => {
@@ -152,11 +162,16 @@ describe("api/journal — POST sync", () => {
     expect(body.available).toBe(true);
     expect(body.count).toBe(30);
 
-    const upserts = calls.filter((c) => /INSERT INTO journal_entries/.test(c.sql));
+    const upsertBatches = calls.filter((c) => /INSERT INTO journal_entries/.test(c.sql));
     const deletes = calls.filter((c) => /DELETE FROM journal_entries/.test(c.sql));
-    expect(upserts).toHaveLength(30);
+    expect(upsertBatches).toHaveLength(2); // 25 + 5, one D1 request each
     expect(deletes).toHaveLength(1);
-    const upsertedIds = upserts.map((c) => c.params[0]).sort();
+
+    // Every entry landed in exactly one batch — every 4th param (starting
+    // at 0) across both batches, concatenated, is that batch's ids.
+    const upsertedIds = upsertBatches
+      .flatMap((c) => c.params.filter((_: unknown, i: number) => i % 4 === 0))
+      .sort();
     expect(upsertedIds).toEqual(entries.map((e) => e.id).sort());
   });
 

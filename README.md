@@ -479,6 +479,21 @@ aggregation, grouping closed trades by ISO week).
     `EntryRead` now carries a required `detail` field alongside `reason`; new tests assert on
     the detail's actual numeric content (e.g. the exact stop-loss/take-profit dollar
     triggers), not just that it exists.
+19. Made journal sync's upsert batches transactional. Each batch of `UPSERT_BATCH_SIZE`
+    entries was previously sent as that many separate, individually-auto-committed D1
+    requests (run concurrently, not atomically) — a failure partway through a batch could
+    leave it partially written. Each batch is now ONE D1 request: a single SQL string
+    wrapping all of that batch's upserts in an explicit `BEGIN TRANSACTION` / `COMMIT`,
+    with one flat, positionally-matched params array. Standard SQLite transaction syntax,
+    and D1 is documented SQLite-compatible — but **not verified against a live D1 database
+    from this environment** (no credentials available here to test against). If D1's HTTP
+    API rejects multi-statement `BEGIN`/`COMMIT` requests outright, the failure mode is
+    still safe: a syntax-level rejection fails before any statement in the batch executes,
+    surfacing as a normal sync error (502) rather than a silent partial write — but this
+    needs a real end-to-end sync against your own D1 database to confirm before you trust
+    it. This does not make the *entire* sync atomic — the delete step, and different
+    batches from each other, are still separate requests, same limitation as before, just
+    with a smaller blast radius (a batch of up to `UPSERT_BATCH_SIZE`, not a single row).
 
 **Still open:** backtesting whether Alex's scan's scoring weights (ported as-is from
 `stock-coach`) actually predict anything — they're currently unvalidated against
