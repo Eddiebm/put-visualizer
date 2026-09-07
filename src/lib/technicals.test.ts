@@ -70,6 +70,34 @@ describe("analyzeStock", () => {
     expect(withEarnings.score).toBe(0);
   });
 
+  it("does not award SMA200 trend points when SMA200 isn't computable yet (50-199 bars, regression)", () => {
+    // Same trailing 100 bars in both calls, so every other scoring factor
+    // (SMA20/50, RSI, ATR, volume, pullback, 10-day return, affordability)
+    // is identical between them — the only thing that can differ is the
+    // SMA200 contribution.
+    const trailing = Array.from({ length: 100 }, (_, i) => 100 + i * 0.1);
+    const shortHistory = makeBars(trailing); // 100 bars — SMA200 not computable
+    // Prepend a steep decline from 400 down to where `trailing` starts, so
+    // once there's enough history the 200-bar window averages well above
+    // the ending price — an unambiguous "below its 200-day average" stock.
+    const decline = Array.from({ length: 120 }, (_, i) => 400 - i * (300 / 119));
+    const longHistory = makeBars([...decline, ...trailing]); // 220 bars — SMA200 real, above price
+
+    const short = analyzeStock({ sym: "X", name: "X", bars: shortHistory, capital: 10000, hasEarnings: false })!;
+    const long = analyzeStock({ sym: "X", name: "X", bars: longHistory, capital: 10000, hasEarnings: false })!;
+
+    expect(short.sma200).toBeNull();
+    expect(long.sma200).not.toBeNull();
+    expect(long.aboveSma200).toBe(false); // engineered: SMA200 sits well above the current price
+
+    // Before the fix, `price > (sma200 ?? 0)` treated a null SMA200 as 0,
+    // so `short` silently got +10 points no real 200-day trend justified —
+    // the same +10 a stock genuinely below its SMA200 (`long`) correctly
+    // does NOT get. With every other factor identical, the scores must
+    // match exactly now that the null case is excluded correctly.
+    expect(short.score).toBe(long.score);
+  });
+
   it("scores a clean long-term uptrend above a flat/declining series", () => {
     const uptrend = Array.from({ length: 220 }, (_, i) => 80 + i * 0.3);
     const decline = Array.from({ length: 220 }, (_, i) => 200 - i * 0.3);

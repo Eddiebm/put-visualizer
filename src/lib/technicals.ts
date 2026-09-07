@@ -105,7 +105,14 @@ export function analyzeStock({ sym, name, bars, capital, hasEarnings, earningsDa
 
   let score = 0;
 
-  if (price > (sma200 ?? 0)) score += 10;
+  // `sma200` is only computed with 200+ bars (a stock with 50-199 bars gets
+  // `null` here, deliberately, since the 200-day trend isn't knowable yet).
+  // `?? 0` would turn that into "price > 0", awarding the points to every
+  // positive-priced stock regardless of whether the trend is confirmed —
+  // this must be a real comparison, not a null-coalesced one. `sma50` is
+  // always defined at this point (the 50-bar floor is enforced above), so
+  // it doesn't need the same guard.
+  if (sma200 != null && price > sma200) score += 10;
   if (price > (sma50 ?? 0)) score += 10;
 
   if (pullbackPct !== null) {

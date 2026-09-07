@@ -12,6 +12,13 @@ import type { JournalEntry, Mode, StrategyParams, WeekSummary } from "../types";
 // Takes Partial<JournalEntry> deliberately: this function's whole job is
 // tolerating incomplete/legacy entries, not just full ones.
 export function entryCollateral(e: Partial<JournalEntry>): number | null {
+  // A naked strangle's risk is genuinely uncapped — the call side has no
+  // ceiling — even though buildModel() always stores a finite `collateral`
+  // on the entry (the put side's cash requirement, same number the live
+  // calculator's "Collateral" stat shows). Mode has to be checked before
+  // trusting a stored snapshot, or a logged strangle silently reads as a
+  // defined-risk position here.
+  if (e.mode === "strangle") return null;
   if (e.collateral != null) return e.collateral;
   const shares = (e.contracts || 0) * 100;
   if (e.mode === "put") return (e.putStrike as number) * shares;

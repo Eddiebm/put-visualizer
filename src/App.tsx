@@ -108,6 +108,7 @@ export default function App() {
     try { return localStorage.getItem(JOURNAL_SYNC_KEY_STORAGE) || ""; } catch { return ""; }
   });
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("idle");
+  const [pulled, setPulled] = useState(false); // has the initial pull for the current syncKey resolved?
   const appliedRef = useRef<number | null>(null);
   const syncedOnceRef = useRef(false);
 
@@ -132,31 +133,47 @@ export default function App() {
     }
   }, [journal]);
 
-  // On mount, if a sync key is configured, pull the server copy of the
-  // journal and adopt it as source of truth (it's the durable copy — the
-  // local one is just this browser's cache). Runs once.
+  // Pull the server copy of the journal and adopt it as source of truth
+  // (it's the durable copy — the local one is just this browser's cache).
+  // Runs whenever the sync key changes — including the first time one is
+  // entered, not just at mount — so the push effect below always has a
+  // real pull to wait on before it's allowed to write anything back.
+  //
+  // Adopts the server's array even when it's empty: an empty result is
+  // either "nothing has ever synced" or "the journal was deliberately
+  // emptied from another device," and this endpoint's whole contract is
+  // that the server is the source of truth — an empty array is still an
+  // answer, not a "no answer yet" to fall back past. Treating only
+  // non-empty arrays as authoritative was exactly backwards: it silently
+  // ignored deletions made from other devices.
   useEffect(() => {
     if (!syncKey) return;
+    setPulled(false);
     setSyncStatus("checking");
     fetch("/api/journal", { headers: { "x-journal-key": syncKey } })
-      .then((r) => r.json().then((d) => ({ ok: r.ok, status: r.status, d })))
+      .then((r) => r.json().then((d) => ({ status: r.status, d })))
       .then(({ status, d }) => {
         if (status === 401) { setSyncStatus("unauthorized"); return; }
         if (!d.available) { setSyncStatus("not_configured"); return; }
-        if (Array.isArray(d.entries) && d.entries.length > 0) {
+        if (Array.isArray(d.entries)) {
           syncedOnceRef.current = true; // this fetch will drive a setJournal — don't echo it right back
           setJournal(d.entries);
         }
         setSyncStatus("synced");
       })
-      .catch(() => setSyncStatus("offline"));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+      .catch(() => setSyncStatus("offline"))
+      .finally(() => setPulled(true));
+  }, [syncKey]);
 
   // Push the full journal to the server whenever it changes, if a sync key
-  // is configured. Full-replace, not incremental — see api/journal.js.
+  // is configured — but only once the pull above has resolved for that key.
+  // Without that gate, a second browser (or the same one, right after a key
+  // is entered) fires this on mount with whatever was in localStorage
+  // before the pull's response ever comes back, and a full-replace POST
+  // can stomp the server's real journal with stale or empty local data.
+  // Full-replace, not incremental — see api/journal.ts.
   useEffect(() => {
-    if (!syncKey) return;
+    if (!syncKey || !pulled) return;
     if (syncedOnceRef.current) { syncedOnceRef.current = false; return; } // skip the echo from the pull above
     setSyncStatus("checking");
     fetch("/api/journal", {
@@ -171,7 +188,7 @@ export default function App() {
         setSyncStatus(d.error ? "offline" : "synced");
       })
       .catch(() => setSyncStatus("offline"));
-  }, [journal, syncKey]);
+  }, [journal, syncKey, pulled]);
 
   // Sync Tastytrade live balance → capital field
   useEffect(() => {

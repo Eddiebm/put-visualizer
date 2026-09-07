@@ -88,21 +88,31 @@ export default async function handler(req: Request): Promise<Response> {
       const now = new Date().toISOString();
       const ids = body.entries.map((e) => String(e.id));
 
-      // Delete anything server-side that's no longer in the client's array.
-      if (ids.length > 0) {
-        const placeholders = ids.map(() => "?").join(",");
-        await d1(`DELETE FROM journal_entries WHERE id NOT IN (${placeholders})`, ids);
-      } else {
-        await d1("DELETE FROM journal_entries");
-      }
-
-      // Upsert everything the client has.
+      // Upsert everything the client has BEFORE deleting what it doesn't —
+      // not the other way around. The two operations touch disjoint rows
+      // (delete only ever removes ids absent from the client's array, and
+      // upsert only ever touches ids present in it), so the end state is
+      // identical either way once both succeed. But each is its own D1
+      // request, not one atomic transaction, so ordering matters if one
+      // fails partway: delete-then-upsert can leave FEWER rows than either
+      // journal ever had (a failed upsert after a successful delete loses
+      // data); upsert-then-delete can at worst leave a stale row or two
+      // temporarily (a failed delete after successful upserts), which the
+      // next sync cleans up — never fewer rows than intended.
       for (const e of body.entries) {
         await d1(
           "INSERT INTO journal_entries (id, status, data, updated_at) VALUES (?, ?, ?, ?) " +
             "ON CONFLICT(id) DO UPDATE SET status = excluded.status, data = excluded.data, updated_at = excluded.updated_at",
           [String(e.id), String(e.status || "open"), JSON.stringify(e), now]
         );
+      }
+
+      // Delete anything server-side that's no longer in the client's array.
+      if (ids.length > 0) {
+        const placeholders = ids.map(() => "?").join(",");
+        await d1(`DELETE FROM journal_entries WHERE id NOT IN (${placeholders})`, ids);
+      } else {
+        await d1("DELETE FROM journal_entries");
       }
 
       return json({ available: true, count: body.entries.length }, 200, ch);

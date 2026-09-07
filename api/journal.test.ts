@@ -84,7 +84,7 @@ describe("api/journal — POST sync", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("issues a DELETE...NOT IN followed by one upsert per entry", async () => {
+  it("issues one upsert per entry followed by a DELETE...NOT IN", async () => {
     setEnv();
     const calls: any[] = [];
     vi.stubGlobal("fetch", vi.fn(async (url: string, opts: { body: string }) => {
@@ -105,11 +105,15 @@ describe("api/journal — POST sync", () => {
     expect(body.available).toBe(true);
     expect(body.count).toBe(2);
 
-    expect(calls[0].sql).toMatch(/DELETE FROM journal_entries WHERE id NOT IN/);
-    expect(calls[0].params).toEqual(["e1", "e2"]);
-    expect(calls.length).toBe(3); // 1 delete + 2 upserts
+    // Upserts run before the delete — a failed upsert then leaves the old
+    // rows in place instead of losing data (see the comment in journal.ts).
+    expect(calls.length).toBe(3); // 2 upserts + 1 delete
+    expect(calls[0].sql).toMatch(/INSERT INTO journal_entries/);
+    expect(calls[0].sql).toMatch(/ON CONFLICT/);
     expect(calls[1].sql).toMatch(/INSERT INTO journal_entries/);
     expect(calls[1].sql).toMatch(/ON CONFLICT/);
+    expect(calls[2].sql).toMatch(/DELETE FROM journal_entries WHERE id NOT IN/);
+    expect(calls[2].params).toEqual(["e1", "e2"]);
   });
 
   it("deletes everything when synced with an empty array", async () => {

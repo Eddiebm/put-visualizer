@@ -22,6 +22,17 @@ describe("entryCollateral", () => {
     expect(entryCollateral({ mode: "strangle", putStrike: 45, callStrike: 55, contracts: 1 })).toBeNull();
   });
 
+  it("returns null for a strangle even when a stored collateral snapshot exists (regression)", () => {
+    // buildModel() always stores a finite `collateral` on every logged entry
+    // — for a strangle it's just the put side's cash requirement, the same
+    // number the live calculator's "Collateral" stat shows. Mode has to
+    // take precedence over that stored value here, or a logged strangle
+    // silently reads as a defined-risk position with the call side's
+    // unlimited loss hidden — exactly the kind of thing this app's ethos
+    // says never to do.
+    expect(entryCollateral({ mode: "strangle", putStrike: 45, callStrike: 55, contracts: 1, collateral: 4500 })).toBeNull();
+  });
+
   it("returns null for a legacy spread entry missing its long strike (regression case)", () => {
     // This is exactly the shape a spread entry had before the logTrade() fix.
     expect(entryCollateral({ mode: "spread", putStrike: 50, contracts: 1 })).toBeNull();
