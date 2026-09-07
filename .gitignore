@@ -6,3 +6,6 @@ dist/
 .env
 .env.*
 !.env.example
+# Output written by `npm run backtest:alex` (see scripts/backtest/) — a
+# local analysis artifact, not something to check in.
+scripts/backtest/*.json

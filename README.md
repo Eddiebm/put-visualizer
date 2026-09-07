@@ -316,9 +316,10 @@ tree is TypeScript now (`strict: true`) — see **Since then** below.
 ## Running the tests and linter
 
 ```bash
-npm test          # Vitest — 339 tests: every pure module in src/lib/, every api/*.ts
-                  # Edge function, every component in src/components/ (RTL), and
-                  # App.tsx's own orchestration (tabs, sync, tour, journal, Tasty)
+npm test          # Vitest — 353 tests: every pure module in src/lib/, every api/*.ts
+                  # Edge function, every component in src/components/ (RTL),
+                  # App.tsx's own orchestration (tabs, sync, tour, journal, Tasty),
+                  # and the Alex's-scan backtest harness (scripts/backtest/)
 npm run typecheck # tsc --noEmit — the primary safety net now (strict: true)
 npm run lint      # ESLint — react-hooks rules (rules-of-hooks, exhaustive-deps)
 ```
@@ -543,11 +544,65 @@ aggregation, grouping closed trades by ISO week).
     original 2×), stored per-entry (`JournalEntry.stopLossMultiplier`) at log time so past
     trades keep whatever rule was in effect when they were logged, with older entries
     (logged before this existed) falling back to 2× exactly as before.
+24. Built the walk-forward backtest harness for Alex's scan (`scripts/backtest/`, see
+    below) — the scoring itself is untouched, this only builds the tooling to validate it
+    against real history once there's a live deployment's Alpaca credentials to validate
+    it with. The pure sampling/bucketing logic (`engine.ts`/`stats.ts`) is fully unit
+    tested now (14 tests), including a regression test proving it never leaks a future
+    bar into a historical day's score.
 
-**Still open:** backtesting whether Alex's scan's scoring weights (ported as-is from
-`stock-coach`) actually predict anything — they're currently unvalidated against
-historical outcomes, and validating them needs a real deployment with live market-data
-keys, not something that can be done from a sandbox with no credentials.
+**Still open:** actually running the backtest below against live data — the harness is
+built and tested, but validating anything needs a real deployment's market-data keys,
+not something that can be done from a sandbox with no credentials.
+
+## Backtesting Alex's scan (`scripts/backtest/`)
+
+Alex's scan's scoring weights (`src/lib/technicals.ts`, ported as-is from `stock-coach`)
+have never been validated against real historical outcomes — the app has always just
+trusted that "confirmed uptrend + tight pullback + relative strength + healthy RSI"
+adds up to a real edge. `scripts/backtest/` is a walk-forward backtest that checks: did a
+higher score/grade actually correlate with a better forward return than a lower one,
+historically?
+
+**How it works:** for each ticker and each historical trading day `i` (starting once
+there's enough trailing history for a real `sma200` read), it calls the exact same
+`analyzeStock()` the live app calls, but only with bars up to and including day `i` —
+never a bar from the future — then measures the actual forward return over several
+horizons (5/10/20 trading days) and buckets those returns by the grade/score `analyzeStock`
+would have shown a user that day. If the scoring means anything, a "Strong setup" bucket's
+mean forward return should beat "Avoid," and mean return should trend upward score-decile
+by score-decile.
+
+```bash
+# Sanity-check the harness itself — synthetic data, no credentials needed:
+npm run backtest:alex -- --dry-run
+
+# The real thing, once ALPACA_KEY_ID/ALPACA_SECRET_KEY (the same credentials
+# api/history.ts uses) are set in the environment:
+npm run backtest:alex
+npm run backtest:alex -- --years=5 --horizons=5,10,20 --stride=5
+npm run backtest:alex -- --tickers=AAPL,MSFT,NVDA --out=my-run.json
+```
+
+It calls Alpaca directly rather than going through `api/history.ts` — that endpoint caps
+`days` at 400 (a live-app design choice; no real caller ever needs more), but a multi-year
+walk-forward backtest needs far more trailing history than any single live request does.
+
+**What it doesn't validate, on purpose, not by accident:**
+- **Earnings risk.** `hasEarnings` is fixed to `false` throughout — there's no historical
+  earnings calendar wired up, so the score-forced-to-0 earnings-blackout rule is never
+  exercised. A ticker that actually had earnings inside a sampled window is scored as if
+  it hadn't.
+- **Sample independence.** Consecutive samples from the same ticker share most of their
+  trailing bars and overlapping forward windows — they are not independent observations.
+  The reported `±SE` is the naive i.i.d. formula; treat it as a rough sample-size guide,
+  not a rigorous confidence interval.
+
+The walk-forward/bucketing logic itself (`engine.ts`, `stats.ts`) is pure and fully unit
+tested (`engine.test.ts`, `stats.test.ts`, 14 tests) — including a regression test that
+plants a deliberate future price jump and asserts a day's score is unaffected by it, which
+is the one property this kind of backtest lives or dies on. Only the Alpaca-fetching layer
+(`dataSource.ts`) needs live credentials and is untestable without them.
 
 **Do not** turn this into a "winning" app. Do not lead with annualized yield, win-rate, or
 "X% of puts expire worthless." Do not hide, net, or downplay losses. Do not add streak
