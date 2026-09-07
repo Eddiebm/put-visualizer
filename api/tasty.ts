@@ -4,7 +4,19 @@ import { rejectOrigin, corsHeaders } from "./_cors";
 import { rateLimit, clientKey, rateLimitResponse } from "./_rateLimit";
 import type { TastyOrderPayload } from "../src/types";
 
-const BASE = "https://api.tastyworks.com";
+const PROD_BASE = "https://api.tastyworks.com";
+// Tastytrade's sandbox/certification environment — a separate system that
+// resets every 24h (trades/positions/balances cleared, accounts kept),
+// orders never reach a real market, and quotes are always 15-min delayed.
+// See https://developer.tastytrade.com/sandbox/.
+const CERT_BASE = "https://api.cert.tastyworks.com";
+
+// Only ever returns one of the two constants above — never interpolates
+// `env` into a URL — so an unexpected value just falls back to prod rather
+// than opening any kind of base-URL injection surface.
+function baseFor(env: TastyRequestBody["env"]): string {
+  return env === "cert" ? CERT_BASE : PROD_BASE;
+}
 
 // General cap across every action on this endpoint (login, accounts,
 // dry-run, place, refresh) — generous for real interactive use, tight
@@ -25,6 +37,10 @@ interface TastyRequestBody {
   accountNumber?: string;
   order?: TastyOrderPayload;
   rememberToken?: string;
+  // "cert" = Tastytrade's sandbox (see CERT_BASE above); anything else,
+  // including omitted, means prod — matches every request from before
+  // this field existed.
+  env?: "prod" | "cert";
 }
 
 export default async function handler(req: Request): Promise<Response> {
@@ -56,11 +72,11 @@ export default async function handler(req: Request): Promise<Response> {
   return json({ error: "unknown_action" }, 400);
 }
 
-async function handleAuth({ login, password }: TastyRequestBody): Promise<Response> {
+async function handleAuth({ login, password, env }: TastyRequestBody): Promise<Response> {
   if (!login || !password) return json({ error: "login and password required" }, 400);
   if (login.length > 200 || password.length > 200) return json({ error: "invalid credentials" }, 400);
 
-  const r = await fetch(`${BASE}/sessions`, {
+  const r = await fetch(`${baseFor(env)}/sessions`, {
     method: "POST",
     headers: { "content-type": "application/json", "accept": "application/json" },
     body: JSON.stringify({ login, password, "remember-me": true }),
@@ -79,10 +95,10 @@ async function handleAuth({ login, password }: TastyRequestBody): Promise<Respon
   return json({ token, rememberToken: remember });
 }
 
-async function handleRefresh({ rememberToken }: TastyRequestBody): Promise<Response> {
+async function handleRefresh({ rememberToken, env }: TastyRequestBody): Promise<Response> {
   if (!rememberToken) return json({ error: "rememberToken required" }, 400);
 
-  const r = await fetch(`${BASE}/sessions`, {
+  const r = await fetch(`${baseFor(env)}/sessions`, {
     method: "POST",
     headers: { "content-type": "application/json", "accept": "application/json" },
     body: JSON.stringify({ "remember-token": rememberToken }),
@@ -96,10 +112,10 @@ async function handleRefresh({ rememberToken }: TastyRequestBody): Promise<Respo
   return json({ token, rememberToken: remember });
 }
 
-async function handleAccounts({ token }: TastyRequestBody): Promise<Response> {
+async function handleAccounts({ token, env }: TastyRequestBody): Promise<Response> {
   if (!token) return json({ error: "token required" }, 400);
 
-  const r = await fetch(`${BASE}/customers/me/accounts`, {
+  const r = await fetch(`${baseFor(env)}/customers/me/accounts`, {
     headers: { "Authorization": token, "accept": "application/json" },
   });
 
@@ -114,7 +130,7 @@ async function handleAccounts({ token }: TastyRequestBody): Promise<Response> {
     const num = acct["account-number"];
     if (!num) return null;
 
-    const balR = await fetch(`${BASE}/accounts/${num}/balances`, {
+    const balR = await fetch(`${baseFor(env)}/accounts/${num}/balances`, {
       headers: { "Authorization": token, "accept": "application/json" },
     });
     const balData = balR.ok ? await balR.json() : null;
@@ -132,14 +148,14 @@ async function handleAccounts({ token }: TastyRequestBody): Promise<Response> {
   return json({ accounts: accounts.filter(Boolean) });
 }
 
-async function handleOrder({ token, accountNumber, order }: TastyRequestBody, dryRun: boolean): Promise<Response> {
+async function handleOrder({ token, accountNumber, order, env }: TastyRequestBody, dryRun: boolean): Promise<Response> {
   if (!token || !accountNumber || !order) {
     return json({ error: "token, accountNumber, and order required" }, 400);
   }
 
   const endpoint = dryRun
-    ? `${BASE}/accounts/${accountNumber}/orders/dry-run`
-    : `${BASE}/accounts/${accountNumber}/orders`;
+    ? `${baseFor(env)}/accounts/${accountNumber}/orders/dry-run`
+    : `${baseFor(env)}/accounts/${accountNumber}/orders`;
 
   const r = await fetch(endpoint, {
     method: "POST",

@@ -108,6 +108,83 @@ describe("TastyConnect — connected state", () => {
     await user.click(screen.getByText("Disconnect"));
     expect(onDisconnect).toHaveBeenCalledOnce();
   });
+
+  it("shows a SANDBOX badge, not LIVE, for a session connected to the cert environment", () => {
+    render(
+      <TastyConnect
+        tasty={{ nickname: "Main", buyingPower: 5000, accountNumber: "5WX00001", token: "t", env: "cert" }}
+        onConnect={() => {}}
+        onDisconnect={() => {}}
+      />
+    );
+    expect(screen.getByText("SANDBOX")).toBeInTheDocument();
+    expect(screen.queryByText("LIVE")).not.toBeInTheDocument();
+  });
+});
+
+describe("TastyConnect — sandbox mode", () => {
+  it("skips the live-trading warning gate entirely when Sandbox is selected, even with no prior acknowledgment", async () => {
+    const user = userEvent.setup();
+    render(<TastyConnect tasty={null} onConnect={() => {}} onDisconnect={() => {}} />);
+    await user.click(screen.getByText("🔗 Connect Tastytrade"));
+    await user.click(screen.getByRole("button", { name: "Sandbox" }));
+
+    expect(screen.queryByText(/This is live trading, not a demo/)).not.toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Email")).toBeInTheDocument();
+    expect(screen.getByText("(sandbox)")).toBeInTheDocument();
+  });
+
+  it("switching back to Live re-shows the gate if it still hasn't been acknowledged", async () => {
+    const user = userEvent.setup();
+    render(<TastyConnect tasty={null} onConnect={() => {}} onDisconnect={() => {}} />);
+    await user.click(screen.getByText("🔗 Connect Tastytrade"));
+    await user.click(screen.getByRole("button", { name: "Sandbox" }));
+    expect(screen.getByPlaceholderText("Email")).toBeInTheDocument(); // sandbox: no gate
+
+    await user.click(screen.getByRole("button", { name: "Live" }));
+    expect(screen.getByText(/This is live trading, not a demo/)).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText("Email")).not.toBeInTheDocument();
+  });
+
+  it("sends env: \"cert\" on both the auth and accounts calls, and includes it in the connected session", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ token: "tok", rememberToken: "rem" }) })
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ accounts: [{ accountNumber: "5WX00001", nickname: "Sandbox acct", buyingPower: 1000, netLiq: 1000 }] }) });
+    vi.stubGlobal("fetch", fetchMock);
+    const onConnect = vi.fn();
+    const user = userEvent.setup();
+    render(<TastyConnect tasty={null} onConnect={onConnect} onDisconnect={() => {}} />);
+    await user.click(screen.getByText("🔗 Connect Tastytrade"));
+    await user.click(screen.getByRole("button", { name: "Sandbox" }));
+    await user.type(screen.getByPlaceholderText("Email"), "me@example.com");
+    await user.type(screen.getByPlaceholderText("Password"), "hunter2");
+    await user.click(screen.getByText("Connect →"));
+
+    const [, authOpts] = fetchMock.mock.calls[0];
+    const [, acctOpts] = fetchMock.mock.calls[1];
+    expect(JSON.parse(authOpts.body).env).toBe("cert");
+    expect(JSON.parse(acctOpts.body).env).toBe("cert");
+    expect(onConnect).toHaveBeenCalledWith(expect.objectContaining({ env: "cert" }));
+  });
+
+  it("connecting on Live (the default) still sends env: \"prod\"", async () => {
+    localStorage.setItem(TASTY_LIVE_ACK_KEY, String(Date.now())); // skip the gate for this test
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ token: "tok", rememberToken: "rem" }) })
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ accounts: [{ accountNumber: "5WX00001", nickname: "Main", buyingPower: 5000, netLiq: 5000 }] }) });
+    vi.stubGlobal("fetch", fetchMock);
+    const onConnect = vi.fn();
+    const user = userEvent.setup();
+    render(<TastyConnect tasty={null} onConnect={onConnect} onDisconnect={() => {}} />);
+    await user.click(screen.getByText("🔗 Connect Tastytrade"));
+    await user.type(screen.getByPlaceholderText("Email"), "me@example.com");
+    await user.type(screen.getByPlaceholderText("Password"), "hunter2");
+    await user.click(screen.getByText("Connect →"));
+
+    const [, authOpts] = fetchMock.mock.calls[0];
+    expect(JSON.parse(authOpts.body).env).toBe("prod");
+    expect(onConnect).toHaveBeenCalledWith(expect.objectContaining({ env: "prod" }));
+  });
 });
 
 describe("TastyConnect — login form disables Connect until both fields are filled", () => {

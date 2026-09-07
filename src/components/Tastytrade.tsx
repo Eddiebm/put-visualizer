@@ -21,12 +21,18 @@ export function TastyConnect({ tasty, onConnect, onDisconnect }: TastyConnectPro
   const [open, setOpen] = useState(false);
   const [ackAt, setAckAt] = useState<number | null>(loadTastyAckAt);
   const [ackChecked, setAckChecked] = useState(false);
+  const [env, setEnv] = useState<"prod" | "cert">("prod");
   const [login, setLogin] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const needsAck = !ackAt || (Date.now() - ackAt) > TASTY_LIVE_ACK_TTL_MS;
+  // The live-trading acknowledgment only guards prod — sandbox never risks
+  // real money (Tastytrade's cert environment: orders never reach a real
+  // market, everything resets every 24h), so gating it behind the same
+  // "I understand this places real orders" checkbox would be actively
+  // misleading, not extra safety.
+  const needsAck = env === "prod" && (!ackAt || (Date.now() - ackAt) > TASTY_LIVE_ACK_TTL_MS);
 
   function acknowledge() {
     const now = Date.now();
@@ -42,7 +48,7 @@ export function TastyConnect({ tasty, onConnect, onDisconnect }: TastyConnectPro
       const authRes = await fetch("/api/tasty", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ action: "auth", login, password }),
+        body: JSON.stringify({ action: "auth", login, password, env }),
       });
       const authData = await authRes.json();
       if (!authRes.ok) { setError(authData.error ?? "Login failed"); setBusy(false); return; }
@@ -50,7 +56,7 @@ export function TastyConnect({ tasty, onConnect, onDisconnect }: TastyConnectPro
       const acctRes = await fetch("/api/tasty", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ action: "accounts", token: authData.token }),
+        body: JSON.stringify({ action: "accounts", token: authData.token, env }),
       });
       const acctData = await acctRes.json();
       const first = acctData.accounts?.[0];
@@ -63,6 +69,7 @@ export function TastyConnect({ tasty, onConnect, onDisconnect }: TastyConnectPro
         nickname: first.nickname,
         buyingPower: first.buyingPower,
         netLiq: first.netLiq,
+        env,
       });
       setPassword(""); setOpen(false);
     } catch { setError("Connection failed — check your internet"); }
@@ -82,9 +89,15 @@ export function TastyConnect({ tasty, onConnect, onDisconnect }: TastyConnectPro
         <div>
           <div style={{ fontWeight: 700, color: "#16a34a" }}>
             ✓ Tastytrade connected{" "}
-            <span style={{ color: "#fff", background: "#e14c4c", borderRadius: 4, padding: "1px 6px", fontSize: 10, letterSpacing: "0.04em", marginLeft: 2 }}>
-              LIVE
-            </span>
+            {tasty.env === "cert" ? (
+              <span style={{ color: "#fff", background: "#0369a1", borderRadius: 4, padding: "1px 6px", fontSize: 10, letterSpacing: "0.04em", marginLeft: 2 }}>
+                SANDBOX
+              </span>
+            ) : (
+              <span style={{ color: "#fff", background: "#e14c4c", borderRadius: 4, padding: "1px 6px", fontSize: 10, letterSpacing: "0.04em", marginLeft: 2 }}>
+                LIVE
+              </span>
+            )}
           </div>
           <div style={{ color: "#475569" }}>{tasty.nickname} · BP: {money(tasty.buyingPower)}</div>
         </div>
@@ -97,6 +110,35 @@ export function TastyConnect({ tasty, onConnect, onDisconnect }: TastyConnectPro
 
   return (
     <div style={{ position: "fixed", bottom: 84, right: 24, zIndex: 150 }}>
+      {open && (
+        <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", marginBottom: 8 }}>
+          <button
+            type="button"
+            onClick={() => setEnv("prod")}
+            style={{
+              border: "1px solid " + (env === "prod" ? "#e14c4c" : "#e2e8f0"),
+              background: env === "prod" ? "#fef2f2" : "#fff",
+              color: env === "prod" ? "#991b1b" : "#64748b",
+              borderRadius: 20, padding: "4px 12px", fontSize: 11, fontWeight: 700, cursor: "pointer",
+            }}
+          >
+            Live
+          </button>
+          <button
+            type="button"
+            onClick={() => setEnv("cert")}
+            style={{
+              border: "1px solid " + (env === "cert" ? "#0369a1" : "#e2e8f0"),
+              background: env === "cert" ? "#eff6ff" : "#fff",
+              color: env === "cert" ? "#0369a1" : "#64748b",
+              borderRadius: 20, padding: "4px 12px", fontSize: 11, fontWeight: 700, cursor: "pointer",
+            }}
+            title="Tastytrade's sandbox — orders never reach a real market, resets every 24h"
+          >
+            Sandbox
+          </button>
+        </div>
+      )}
       {open && needsAck && (
         <div style={{
           marginBottom: 8, background: "#fff", border: "1.5px solid #fecaca",
@@ -107,9 +149,11 @@ export function TastyConnect({ tasty, onConnect, onDisconnect }: TastyConnectPro
             ⚠ This is live trading, not a demo
           </div>
           <div style={{ fontSize: 12.5, color: "#475569", lineHeight: 1.6, marginBottom: 12 }}>
-            Connecting talks to Tastytrade's <b>production</b> API. There is no paper/sandbox mode —
-            any order you place from this app trades <b>real money</b> in your real account. Everything
-            else in this app (the calculator, journal, scans, reports) works fully without ever connecting this.
+            Connecting talks to Tastytrade's <b>production</b> API — any order you place from this
+            app trades <b>real money</b> in your real account. Everything else in this app (the
+            calculator, journal, scans, reports) works fully without ever connecting this. Want to
+            test the order flow risk-free first? Pick <b>Sandbox</b> above instead — no real money,
+            no acknowledgment needed.
           </div>
           <label style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 12, color: "#0f172a", marginBottom: 14, cursor: "pointer" }}>
             <input type="checkbox" checked={ackChecked} onChange={(e) => setAckChecked(e.target.checked)} style={{ marginTop: 2 }} />
@@ -137,10 +181,20 @@ export function TastyConnect({ tasty, onConnect, onDisconnect }: TastyConnectPro
           boxShadow: "0 8px 32px rgba(0,0,0,0.14)",
         }}>
           <div style={{ fontWeight: 700, fontSize: 14, color: "#0f172a", marginBottom: 4 }}>
-            Connect Tastytrade <span style={{ color: "#e14c4c", fontSize: 11 }}>(live)</span>
+            Connect Tastytrade{" "}
+            {env === "cert" ? (
+              <span style={{ color: "#0369a1", fontSize: 11 }}>(sandbox)</span>
+            ) : (
+              <span style={{ color: "#e14c4c", fontSize: 11 }}>(live)</span>
+            )}
           </div>
           <div style={{ fontSize: 12, color: "#64748b", marginBottom: 14 }}>
             Your password is never stored — only a session token.
+            {env === "cert" && (
+              <> Uses your Tastytrade <b>sandbox</b> account (set one up at{" "}
+                <span style={{ fontFamily: "monospace" }}>developer.tastytrade.com/sandbox</span> if
+                you haven't) — separate from your live login. No real money; resets every 24h.</>
+            )}
           </div>
           <input
             type="email" placeholder="Email" value={login}
@@ -215,14 +269,14 @@ export function TastyOrderConfirm({ order, tasty, onClose, onRefreshSession }: T
     const r = await fetch("/api/tasty", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ ...body, token: tasty.token, accountNumber: tasty.accountNumber }),
+      body: JSON.stringify({ ...body, token: tasty.token, accountNumber: tasty.accountNumber, env: tasty.env }),
     });
     if (r.status === 401) {
       // Try refresh
       const ref = await fetch("/api/tasty", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ action: "refresh", rememberToken: tasty.rememberToken }),
+        body: JSON.stringify({ action: "refresh", rememberToken: tasty.rememberToken, env: tasty.env }),
       });
       const refData = await ref.json();
       if (!ref.ok) throw new Error("Session expired — please reconnect Tastytrade");
@@ -231,7 +285,7 @@ export function TastyOrderConfirm({ order, tasty, onClose, onRefreshSession }: T
       const r2 = await fetch("/api/tasty", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ ...body, token: refData.token, accountNumber: tasty.accountNumber }),
+        body: JSON.stringify({ ...body, token: refData.token, accountNumber: tasty.accountNumber, env: tasty.env }),
       });
       return r2.json();
     }
@@ -311,9 +365,15 @@ export function TastyOrderConfirm({ order, tasty, onClose, onRefreshSession }: T
               </div>
             </div>
 
-            <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 8, padding: "10px 12px", fontSize: 12, color: "#92400e", marginBottom: 18 }}>
-              ⚠ This places a real order with real money in your Tastytrade account. Double-check the details above.
-            </div>
+            {tasty.env === "cert" ? (
+              <div style={{ background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 8, padding: "10px 12px", fontSize: 12, color: "#0369a1", marginBottom: 18 }}>
+                🧪 Sandbox order — no real money, orders never reach a real market. Good for testing the flow.
+              </div>
+            ) : (
+              <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 8, padding: "10px 12px", fontSize: 12, color: "#92400e", marginBottom: 18 }}>
+                ⚠ This places a real order with real money in your Tastytrade account. Double-check the details above.
+              </div>
+            )}
 
             <label style={{ display: "block", fontSize: 12, color: "#64748b", marginBottom: 6 }}>
               Type <b>PLACE</b> to confirm
@@ -350,9 +410,13 @@ export function TastyOrderConfirm({ order, tasty, onClose, onRefreshSession }: T
         {stage === "done" && (
           <div style={{ textAlign: "center", padding: "16px 0" }}>
             <div style={{ fontSize: 40, marginBottom: 12 }}>✅</div>
-            <div style={{ fontWeight: 700, fontSize: 18, color: "#16a34a", marginBottom: 6 }}>Order sent</div>
+            <div style={{ fontWeight: 700, fontSize: 18, color: "#16a34a", marginBottom: 6 }}>
+              {tasty.env === "cert" ? "Sandbox order sent" : "Order sent"}
+            </div>
             <div style={{ fontSize: 13, color: "#475569", marginBottom: 4 }}>
-              Working limit order — check Tastytrade for fill status.
+              {tasty.env === "cert"
+                ? "Working limit order in the sandbox — no real money moved."
+                : "Working limit order — check Tastytrade for fill status."}
             </div>
             {orderId && <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 18 }}>Order ID: {orderId}</div>}
             <button type="button" onClick={onClose} style={{ padding: "10px 32px", background: "#0f172a", color: "#fff", border: "none", borderRadius: 10, fontSize: 14, fontWeight: 700, cursor: "pointer" }}>

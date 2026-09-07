@@ -137,6 +137,12 @@ export interface TastySession {
   nickname: string;
   buyingPower: number;
   netLiq?: number;
+  // Which Tastytrade environment this session's token belongs to — "prod"
+  // (the default, matching every session before this field existed) or
+  // "cert" (the sandbox: api.cert.tastyworks.com, resets every 24h, no
+  // real money). A session's env can't be inferred later from the token
+  // itself, so every request carrying this token must also carry this.
+  env?: "prod" | "cert";
 }
 
 export interface TastyOrderRequest {

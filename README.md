@@ -281,14 +281,30 @@ server-side backup for this tab the way there is for the journal.
 ## A note on the tastytrade integration
 
 `api/tasty.ts` and the "Connect Tastytrade" button talk to tastytrade's **live production
-API** — there is no sandbox/paper mode. Nothing else in this app touches it: the calculator,
-journal, scans, and reports all work fully without ever connecting it. If you don't
-actually place real orders through this, there's no reason to connect it at all.
+API** by default. Nothing else in this app touches it: the calculator, journal, scans, and
+reports all work fully without ever connecting it. If you don't actually place real orders
+through this, there's no reason to connect it at all.
 
-If you do: connecting now requires reading a warning and checking a box before the login
-form even appears (re-required every 24 hours, not a one-time dismissal), and placing an
-actual order requires typing `PLACE` into a confirmation field — a single click used to be
-all that stood between the confirm screen and a real order.
+If you do connect live: connecting requires reading a warning and checking a box before
+the login form even appears (re-required every 24 hours, not a one-time dismissal), and
+placing an actual order requires typing `PLACE` into a confirmation field — a single click
+used to be all that stood between the confirm screen and a real order.
+
+**Sandbox mode.** A **Live / Sandbox** toggle above the connect panel switches which
+Tastytrade environment the whole session talks to — Sandbox routes every call
+(`api/tasty.ts`'s `baseFor()`) to `api.cert.tastyworks.com`, Tastytrade's own testing
+environment: orders never reach a real market, quotes are always 15-minute delayed, and
+the system resets every 24 hours (trades/positions/balances cleared; the sandbox account
+itself persists). It needs a *separate* sandbox account, set up at
+[developer.tastytrade.com/sandbox](https://developer.tastytrade.com/sandbox/) — not your
+regular login. Picking Sandbox skips the live-trading warning gate entirely (there's
+nothing to warn about — no real money is ever at risk), and every screen in the connect/
+confirm flow relabels itself accordingly (a blue "SANDBOX" badge instead of the red "LIVE"
+one, "Sandbox order — no real money" instead of the real-money warning, "Sandbox order
+sent" on completion). A connected session remembers which environment it authenticated
+against (`TastySession.env`) and sends it on every subsequent call — dry-run, place, and
+token refresh alike — so a sandbox session can never accidentally hit prod or vice versa.
+Defaults to Live, matching every session from before this existed.
 
 ## Project layout
 
@@ -316,7 +332,7 @@ tree is TypeScript now (`strict: true`) — see **Since then** below.
 ## Running the tests and linter
 
 ```bash
-npm test          # Vitest — 389 tests: every pure module in src/lib/, every api/*.ts
+npm test          # Vitest — 403 tests: every pure module in src/lib/, every api/*.ts
                   # Edge function, every component in src/components/ (RTL),
                   # App.tsx's own orchestration (tabs, sync, tour, journal, Tasty),
                   # and the Alex's-scan backtest harness (scripts/backtest/)
@@ -577,6 +593,22 @@ aggregation, grouping closed trades by ISO week).
     be eligible again in a later, separate window after dropping out). Verified end-to-end
     against a synthetic Norgate-shaped export plus a synthetic constituents file, not just
     the unit tests in isolation.
+27. Added a **Live / Sandbox** toggle to the Tastytrade integration (see **A note on the
+    tastytrade integration** above) — Sandbox routes every call to Tastytrade's own testing
+    environment (`api.cert.tastyworks.com`: no real money, orders never reach a real
+    market, resets every 24h) instead of production, and skips the live-trading warning
+    gate entirely since there's nothing to warn about. A connected session remembers which
+    environment it authenticated against and sends it on every subsequent call — dry-run,
+    place, refresh — so a session can't accidentally cross environments. Defaults to Live,
+    matching every session from before this existed; every existing safety test
+    (`Tastytrade.test.tsx`'s live-trading gate suite) still passes unchanged. 14 new tests
+    across `api/tasty.test.ts` (env routes to the right base URL, defaults to prod when
+    omitted — verified failing against a deliberately reintroduced routing bug, then fixed
+    again), `Tastytrade.test.tsx` (gate skipped in sandbox, badge/label switching, `env`
+    sent on connect), and `TastyOrderConfirm.test.tsx` (`env` sent on every call, sandbox-
+    labeled copy). Checked visually with Playwright, not just jsdom, since this is a
+    `position: fixed` corner widget where a new toggle row could plausibly have overlapped
+    something.
 
 **Still open:** actually running the backtest below against live data — the harness is
 built and tested, but validating anything needs a real deployment's market-data keys,

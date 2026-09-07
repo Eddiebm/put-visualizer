@@ -19,7 +19,11 @@ interface MockResponse {
 
 function mockFetchSequence(responses: MockResponse[]) {
   let i = 0;
-  return vi.fn(() => {
+  // Typed as accepting fetch's real (url, init) args — not the plain
+  // no-arg `() => {...}` vi.fn() would otherwise infer from the callback
+  // below (which ignores its args) — so `.mock.calls[n]` is a real
+  // [url, init] tuple for tests that need to inspect the request body.
+  return vi.fn((_url: string, _init?: RequestInit) => {
     const r = responses[Math.min(i, responses.length - 1)];
     i++;
     return Promise.resolve({ ok: r.ok !== false, status: r.status ?? 200, json: () => Promise.resolve(r.body ?? {}) });
@@ -86,5 +90,33 @@ describe("TastyOrderConfirm", () => {
     render(<TastyOrderConfirm order={order} tasty={tasty} onClose={() => {}} onRefreshSession={() => {}} />);
     await waitFor(() => expect(screen.getByText("Order not placed")).toBeInTheDocument());
     expect(screen.getByText("insufficient buying power")).toBeInTheDocument();
+  });
+
+  it("sends the session's env on every call to /api/tasty (dry-run and place alike)", async () => {
+    const sandboxTasty: TastySession = { ...tasty, env: "cert" };
+    const fetchMock = mockFetchSequence([
+      { body: { buyingPowerEffect: {}, feeCalculation: {} } }, // dry-run
+      { body: { orderId: "ORD-SANDBOX" } }, // place
+    ]);
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<TastyOrderConfirm order={order} tasty={sandboxTasty} onClose={() => {}} onRefreshSession={() => {}} />);
+    await waitFor(() => screen.getByText("Confirm your order"));
+    await user.type(screen.getByPlaceholderText("PLACE"), "PLACE");
+    await user.click(screen.getByText("Yes — Place This Order"));
+    await waitFor(() => expect(screen.getByText("Sandbox order sent")).toBeInTheDocument());
+
+    for (const [, opts] of fetchMock.mock.calls) {
+      expect(JSON.parse(opts!.body as string).env).toBe("cert");
+    }
+  });
+
+  it("shows sandbox-labeled copy (no real-money warning) on a sandbox session's confirm screen", async () => {
+    const sandboxTasty: TastySession = { ...tasty, env: "cert" };
+    render(<TastyOrderConfirm order={order} tasty={sandboxTasty} onClose={() => {}} onRefreshSession={() => {}} />);
+    await waitFor(() => screen.getByText("Confirm your order"));
+
+    expect(screen.getByText(/Sandbox order — no real money/)).toBeInTheDocument();
+    expect(screen.queryByText(/This places a real order with real money/)).not.toBeInTheDocument();
   });
 });
