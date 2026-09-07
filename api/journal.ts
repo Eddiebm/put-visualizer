@@ -99,12 +99,25 @@ export default async function handler(req: Request): Promise<Response> {
       // data); upsert-then-delete can at worst leave a stale row or two
       // temporarily (a failed delete after successful upserts), which the
       // next sync cleans up — never fewer rows than intended.
-      for (const e of body.entries) {
-        await d1(
-          "INSERT INTO journal_entries (id, status, data, updated_at) VALUES (?, ?, ?, ?) " +
-            "ON CONFLICT(id) DO UPDATE SET status = excluded.status, data = excluded.data, updated_at = excluded.updated_at",
-          [String(e.id), String(e.status || "open"), JSON.stringify(e), now]
-        );
+      // One D1 HTTP round-trip per entry either way, but sequentially that's
+      // up to 5000 round-trips end to end — easily enough to blow an edge
+      // function's execution limit on a real, months-old journal, breaking
+      // the sync this endpoint exists to provide. The upserts have no
+      // ordering dependency on each other (only "upserts before delete"
+      // above matters), so run each small batch concurrently instead of
+      // one at a time; bounded rather than a single unbounded Promise.all
+      // across the full (up to 5000-entry) array, so this doesn't fire an
+      // unbounded burst of simultaneous outbound requests.
+      const UPSERT_BATCH_SIZE = 25;
+      for (let i = 0; i < body.entries.length; i += UPSERT_BATCH_SIZE) {
+        const batch = body.entries.slice(i, i + UPSERT_BATCH_SIZE);
+        await Promise.all(batch.map((e) =>
+          d1(
+            "INSERT INTO journal_entries (id, status, data, updated_at) VALUES (?, ?, ?, ?) " +
+              "ON CONFLICT(id) DO UPDATE SET status = excluded.status, data = excluded.data, updated_at = excluded.updated_at",
+            [String(e.id), String(e.status || "open"), JSON.stringify(e), now]
+          )
+        ));
       }
 
       // Delete anything server-side that's no longer in the client's array.

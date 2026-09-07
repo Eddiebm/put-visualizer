@@ -116,6 +116,37 @@ describe("api/journal — POST sync", () => {
     expect(calls[2].params).toEqual(["e1", "e2"]);
   });
 
+  it("upserts every entry across multiple concurrency batches, not just the first batch (regression)", async () => {
+    // Upserts run in bounded-concurrency batches now instead of one D1
+    // round-trip at a time, to avoid an edge-function timeout on a large
+    // real journal. 30 entries spans two batches at the current batch size
+    // (25) — this guards against an off-by-one that silently drops or
+    // duplicates entries at a batch boundary.
+    setEnv();
+    const calls: any[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, opts: { body: string }) => {
+      calls.push(JSON.parse(opts.body));
+      return d1Response([]);
+    }));
+    const { default: handler } = await import("./journal");
+    const entries = Array.from({ length: 30 }, (_, i) => ({ id: `e${i}`, status: "open", ticker: "AAPL" }));
+    const res = await handler(new Request("http://x/api/journal", {
+      method: "POST",
+      headers: { "x-journal-key": "secret-key", "content-type": "application/json" },
+      body: JSON.stringify({ action: "sync", entries }),
+    }));
+    const body = await res.json();
+    expect(body.available).toBe(true);
+    expect(body.count).toBe(30);
+
+    const upserts = calls.filter((c) => /INSERT INTO journal_entries/.test(c.sql));
+    const deletes = calls.filter((c) => /DELETE FROM journal_entries/.test(c.sql));
+    expect(upserts).toHaveLength(30);
+    expect(deletes).toHaveLength(1);
+    const upsertedIds = upserts.map((c) => c.params[0]).sort();
+    expect(upsertedIds).toEqual(entries.map((e) => e.id).sort());
+  });
+
   it("deletes everything when synced with an empty array", async () => {
     setEnv();
     const calls: any[] = [];

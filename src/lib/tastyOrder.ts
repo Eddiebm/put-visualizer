@@ -28,8 +28,15 @@ interface BuildTastyOrderInput {
 
 export function buildTastyOrder({ mode, ticker, expiration, putStrike, putPrem, longStrike, longPrem, callStrike, callPrem, contracts }: BuildTastyOrderInput): TastyOrderPayload {
   const qty = contracts || 1;
+  // Must match buildModel()'s credit formula in pnl.ts: a strangle/covered
+  // order sells BOTH the put and call leg (see the legs below), so the
+  // limit price has to reflect both premiums — round2(putPrem) alone
+  // silently discarded the call's premium here, submitting a real order at
+  // a fraction of its actual credit.
   const credit = mode === "spread"
     ? Math.max(0.01, round2((putPrem || 0) - (longPrem || 0)))
+    : mode === "strangle" || mode === "covered"
+    ? round2((putPrem || 0) + (callPrem || 0))
     : round2(putPrem || 0);
 
   const legs: TastyLeg[] = [];

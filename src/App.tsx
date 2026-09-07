@@ -704,7 +704,6 @@ export default function App() {
           longStrike={longStrike}
           spot={spot}
           contracts={contracts}
-          credit={model.credit}
         />
 
         <Journal journal={journal} onLog={logTrade} onClose={closeTrade} onDelete={deleteTrade} />

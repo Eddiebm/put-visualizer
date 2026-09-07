@@ -16,10 +16,9 @@ interface AssignmentViewProps {
   longStrike?: number;
   spot?: number;
   contracts: number;
-  credit: number;
 }
 
-export function AssignmentView({ mode, ticker, putStrike, putPrem, longStrike, spot, contracts, credit }: AssignmentViewProps) {
+export function AssignmentView({ mode, ticker, putStrike, putPrem, longStrike, spot, contracts }: AssignmentViewProps) {
   const summary = assignmentSummary({ putStrike, putPrem, spot, contracts });
   if (!summary) return null;
   const { shares, totalCost, costBasisPerShare, currentValue, gainLoss, hasSpot } = summary;
@@ -51,7 +50,13 @@ export function AssignmentView({ mode, ticker, putStrike, putPrem, longStrike, s
       </div>
       <div style={{ fontSize: 13, color: "#334155", lineHeight: 1.6, marginBottom: 12 }}>
         You'd own <b>{shares} shares</b> of {sym} at {money2(putStrike)} each — {money(totalCost)} total.
-        After the {money(credit)} you collected, your effective cost basis is{" "}
+        {/* This has to be the put's own premium, not the full multi-leg
+            credit passed around elsewhere (e.g. model.credit for a
+            strangle/covered trade includes the call's premium too) — the
+            cost basis below only ever subtracts the put's premium, so the
+            number quoted here has to match what's actually subtracted or
+            the two sentences contradict each other. */}
+        After the {money(putPrem * shares)} put premium, your effective cost basis is{" "}
         <b>{money2(costBasisPerShare)}/share</b>.
       </div>
       {hasSpot && (

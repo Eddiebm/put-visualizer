@@ -41,6 +41,23 @@ describe("buildTastyOrder", () => {
     expect(order.legs.every((l) => l.action === "Sell to Open")).toBe(true);
   });
 
+  it("prices a strangle/covered order at the combined put+call credit, not just the put (regression)", () => {
+    // Both legs are sold ("Sell to Open" above), so the submitted limit
+    // price has to reflect both premiums. This used to silently drop the
+    // call's premium, submitting a real order at a fraction of its value.
+    const strangle = buildTastyOrder({
+      mode: "strangle", ticker: "TSLA", expiration: "2026-09-18",
+      putStrike: 350, putPrem: 6, callStrike: 420, callPrem: 5, contracts: 1,
+    });
+    expect(strangle.price).toBe("11.00"); // 6 + 5, not 6.00
+
+    const covered = buildTastyOrder({
+      mode: "covered", ticker: "AAPL", expiration: "2026-09-18",
+      putStrike: 280, putPrem: 3.5, callStrike: 300, callPrem: 2.5, contracts: 1,
+    });
+    expect(covered.price).toBe("6.00"); // 3.5 + 2.5, not 3.50
+  });
+
   it("never produces a zero-or-negative limit price, even for a razor-thin spread", () => {
     const order = buildTastyOrder({
       mode: "spread", ticker: "X", expiration: "2026-09-18",
