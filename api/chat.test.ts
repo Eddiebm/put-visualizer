@@ -77,3 +77,19 @@ describe("api/chat — auth", () => {
     expect(body.reply).toBe("Here's the answer.");
   });
 });
+
+describe("api/chat — rate limiting", () => {
+  it("returns 429 after RATE_LIMIT requests from the same client, even with wrong keys", async () => {
+    // Runs before the key check, on purpose (see the comment in chat.ts) —
+    // a brute-force attempt against AI_ACCESS_KEY should also get capped.
+    setEnv();
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const { default: handler } = await import("./chat");
+    const headers = { "x-forwarded-for": "9.9.9.9", "x-ai-key": "wrong" };
+    let last;
+    for (let i = 0; i < 21; i++) last = await handler(req(headers));
+    expect(last!.status).toBe(429);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});

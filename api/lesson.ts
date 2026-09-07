@@ -2,6 +2,13 @@ export const config = { runtime: "edge" };
 
 import { corsHeaders, rejectOrigin } from "./_cors";
 import { timingSafeEqual } from "./_auth";
+import { rateLimit, clientKey, rateLimitResponse } from "./_rateLimit";
+
+// See api/chat.ts — same proxy-abuse concern, same fix. Loosest of the
+// three AI endpoints since a normal session is one lesson load plus maybe
+// a "Regenerate" click or two.
+const RATE_LIMIT = 10;
+const RATE_WINDOW_MS = 5 * 60_000;
 
 // Mirror of the curriculum topic list — must stay in sync with src/lib/curriculum.ts
 // (edge functions can't import from src/lib for runtime logic, but see history.ts /
@@ -84,6 +91,9 @@ export default async function handler(req: Request): Promise<Response> {
   if (req.method !== "POST") return json({ error: "method_not_allowed" }, 405, ch);
   const originRejection = rejectOrigin(req);
   if (originRejection) return originRejection;
+
+  const rl = rateLimit(clientKey(req), RATE_LIMIT, RATE_WINDOW_MS);
+  if (!rl.allowed) return rateLimitResponse(rl, ch);
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return json({ available: false, reason: "no_key" }, 200, ch);

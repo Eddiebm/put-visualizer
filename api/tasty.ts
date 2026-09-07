@@ -1,9 +1,21 @@
 export const config = { runtime: "edge" };
 
 import { rejectOrigin, corsHeaders } from "./_cors";
+import { rateLimit, clientKey, rateLimitResponse } from "./_rateLimit";
 import type { TastyOrderPayload } from "../src/types";
 
 const BASE = "https://api.tastyworks.com";
+
+// General cap across every action on this endpoint (login, accounts,
+// dry-run, place, refresh) — generous for real interactive use, tight
+// enough to stop this being used as a relay to hammer tastytrade's live
+// API. "auth" gets its own much tighter limit below: unlike the other
+// actions it doesn't need a valid session token first, so it's the one
+// realistic credential-stuffing surface here — this app would otherwise
+// be a free proxy for guessing tastytrade logins.
+const RATE_LIMIT = 30;
+const AUTH_RATE_LIMIT = 5;
+const RATE_WINDOW_MS = 5 * 60_000;
 
 interface TastyRequestBody {
   action: "auth" | "accounts" | "dry-run" | "place" | "refresh";
@@ -22,12 +34,20 @@ export default async function handler(req: Request): Promise<Response> {
   const denied = rejectOrigin(req);
   if (denied) return denied;
 
+  const ip = clientKey(req);
+  const rl = rateLimit(ip, RATE_LIMIT, RATE_WINDOW_MS);
+  if (!rl.allowed) return rateLimitResponse(rl, corsHeaders(req));
+
   let body: TastyRequestBody;
   try { body = await req.json(); } catch { return json({ error: "invalid_json" }, 400); }
 
   const { action } = body;
 
-  if (action === "auth")        return handleAuth(body);
+  if (action === "auth") {
+    const authRl = rateLimit(`auth:${ip}`, AUTH_RATE_LIMIT, RATE_WINDOW_MS);
+    if (!authRl.allowed) return rateLimitResponse(authRl, corsHeaders(req));
+    return handleAuth(body);
+  }
   if (action === "accounts")    return handleAccounts(body);
   if (action === "dry-run")     return handleOrder(body, true);
   if (action === "place")       return handleOrder(body, false);

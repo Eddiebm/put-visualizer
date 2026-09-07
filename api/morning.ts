@@ -1,6 +1,12 @@
 export const config = { runtime: "edge" };
 
 import { corsHeaders, rejectOrigin } from "./_cors";
+import { rateLimit, clientKey, rateLimitResponse } from "./_rateLimit";
+
+// See api/quote.ts — same reasoning. Called once per page load, not per
+// symbol, so this limit is a generous backstop.
+const RATE_LIMIT = 30;
+const RATE_WINDOW_MS = 5 * 60_000;
 
 // ─── Symbol map — one Yahoo Finance batch call covers everything ──────────────
 interface YfEntry {
@@ -116,6 +122,9 @@ export default async function handler(req: Request): Promise<Response> {
   const ch = corsHeaders(req);
   const originRejection = rejectOrigin(req);
   if (originRejection) return originRejection;
+
+  const rl = rateLimit(clientKey(req), RATE_LIMIT, RATE_WINDOW_MS);
+  if (!rl.allowed) return rateLimitResponse(rl, ch);
 
   const today   = new Date().toISOString().slice(0, 10);
   const weekOut = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);

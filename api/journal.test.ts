@@ -44,6 +44,19 @@ describe("api/journal — auth", () => {
   });
 });
 
+describe("api/journal — rate limiting", () => {
+  it("returns 429 after RATE_LIMIT requests from the same client", async () => {
+    setEnv();
+    const { default: handler } = await import("./journal");
+    const headers = { "x-forwarded-for": "9.9.9.9", "x-journal-key": "wrong" };
+    let last;
+    for (let i = 0; i < 61; i++) {
+      last = await handler(new Request("http://x/api/journal", { headers }));
+    }
+    expect(last!.status).toBe(429);
+  });
+});
+
 describe("api/journal — GET", () => {
   it("returns parsed entries from the D1 response", async () => {
     setEnv();

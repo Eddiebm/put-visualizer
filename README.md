@@ -176,6 +176,33 @@ same-origin browser request would. It's not a substitute for the shared-secret k
 endpoints that actually cost money to call; it's what stops a malicious *webpage* from using
 someone else's browser session against your API.
 
+## Rate limiting
+
+Every `api/*.ts` endpoint now caps how many requests one client can make in a 5-minute
+window (`api/_rateLimit.ts`) — a plain fixed-window counter, keyed by IP
+(`x-forwarded-for`), returning `429` past the limit. It runs *before* any access-key check,
+so wrong-key guesses count against the limit too, not just successful requests — this is
+what actually caps a brute-force attempt against `JOURNAL_ACCESS_KEY` or `AI_ACCESS_KEY`,
+which the constant-time comparison above only made *slower* to guess correctly, not
+*impossible* to attempt without limit. `api/tasty.ts`'s `auth` action (the one place here
+that doesn't need a valid session token first, making it a real credential-stuffing surface
+against tastytrade itself) gets its own much tighter limit on top of the general one.
+
+**Be honest about what this is and isn't.** It's a module-scope in-memory counter — no
+shared state across regions or isolates, and it resets on every cold start. It is NOT a
+hard, globally-consistent guarantee the way a shared store (Vercel KV, Upstash Redis) would
+be: a determined, distributed attacker spreading requests across enough isolates can evade
+it. What it does do, at zero infra cost and zero new env vars, is cap what a single warm
+isolate serves a single client — enough to blunt the realistic cases here (a runaway
+client-side retry loop, a single-source burst, a scripted key-guessing attempt), which is
+most of what this app actually needed defending against. Building an untested Redis/KV
+integration wasn't an option from this environment — there are no live credentials here to
+validate one against — so this is the honest, verifiable version of "add rate limiting,"
+not a stand-in for a production-grade one. If you deploy this somewhere that faces real
+distributed abuse, wire up Vercel KV or Upstash Redis instead and swap out `_rateLimit.ts`'s
+internals; every call site (`rateLimit()`/`clientKey()`/`rateLimitResponse()`) stays the
+same.
+
 ## A note on the tastytrade integration
 
 `api/tasty.ts` and the "Connect Tastytrade" button talk to tastytrade's **live production
@@ -214,7 +241,7 @@ tree is TypeScript now (`strict: true`) — see **Since then** below.
 ## Running the tests and linter
 
 ```bash
-npm test          # Vitest — 269 tests: every pure module in src/lib/, every api/*.ts
+npm test          # Vitest — 288 tests: every pure module in src/lib/, every api/*.ts
                   # Edge function, and every component in src/components/ (RTL)
 npm run typecheck # tsc --noEmit — the primary safety net now (strict: true)
 npm run lint      # ESLint — react-hooks rules (rules-of-hooks, exhaustive-deps)
@@ -364,6 +391,16 @@ aggregation, grouping closed trades by ISO week).
     **Locking down which origins can call the API** above) rather than given their own
     access key — that would be security theater for public market data with no real
     per-call cost to protect.
+15. Added rate limiting to every `api/*.ts` endpoint (`api/_rateLimit.ts`) — previously
+    none of them capped request volume at all, so even a correctly-keyed or same-origin
+    request had no limit on how many times it could be sent. Runs before the access-key
+    check, so it also caps brute-force guesses against `JOURNAL_ACCESS_KEY`/`AI_ACCESS_KEY`
+    (the constant-time comparison in #12 made a wrong guess no faster to detect than a
+    right one, but didn't cap *how many* guesses could be made). `tasty.ts`'s `auth` action
+    gets its own tighter limit, since it's the one action there that doesn't need a valid
+    session token first. Deliberately a zero-dependency, best-effort in-memory limiter, not
+    a Vercel KV/Upstash Redis integration — see **Rate limiting** above for why, and what
+    the honest limits of that choice are.
 
 **Still open:** backtesting whether Alex's scan's scoring weights (ported as-is from
 `stock-coach`) actually predict anything — they're currently unvalidated against

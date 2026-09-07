@@ -85,3 +85,17 @@ describe("api/lesson — auth", () => {
     expect(body.what).toBe("w");
   });
 });
+
+describe("api/lesson — rate limiting", () => {
+  it("returns 429 after RATE_LIMIT requests from the same client", async () => {
+    setEnv();
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const { default: handler } = await import("./lesson");
+    const headers = { "x-forwarded-for": "9.9.9.9", "x-ai-key": "wrong" };
+    let last;
+    for (let i = 0; i < 11; i++) last = await handler(req(headers));
+    expect(last!.status).toBe(429);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});

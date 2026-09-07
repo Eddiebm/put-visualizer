@@ -30,3 +30,17 @@ describe("api/quote — origin gating", () => {
     expect(res.status).not.toBe(403);
   });
 });
+
+describe("api/quote — rate limiting", () => {
+  it("returns 429 after RATE_LIMIT requests from the same client", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false }));
+    const { default: handler } = await import("./quote");
+    let last;
+    for (let i = 0; i < 151; i++) {
+      last = await handler(new Request("http://x/api/quote?symbol=AAPL", {
+        headers: { "x-forwarded-for": "9.9.9.9" },
+      }));
+    }
+    expect(last!.status).toBe(429);
+  });
+});

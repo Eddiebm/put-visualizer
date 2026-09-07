@@ -1,7 +1,13 @@
 export const config = { runtime: "edge" };
 
 import { corsHeaders, rejectOrigin } from "./_cors";
+import { rateLimit, clientKey, rateLimitResponse } from "./_rateLimit";
 import type { Bar } from "../src/types";
+
+// See api/quote.ts — same reasoning. Sized like option.ts: Alex's scan
+// calls this once per symbol across the ~40-symbol watchlist.
+const RATE_LIMIT = 200;
+const RATE_WINDOW_MS = 5 * 60_000;
 
 // Fetches daily bars for realized-vol computation (default ~35 trading days)
 // or, with ?days=N, enough history for longer technical reads (e.g. SMA200).
@@ -10,6 +16,9 @@ export default async function handler(req: Request): Promise<Response> {
   const ch = corsHeaders(req);
   const originRejection = rejectOrigin(req);
   if (originRejection) return originRejection;
+
+  const rl = rateLimit(clientKey(req), RATE_LIMIT, RATE_WINDOW_MS);
+  if (!rl.allowed) return rateLimitResponse(rl, ch);
 
   const { searchParams } = new URL(req.url);
   const symbol = (searchParams.get("symbol") || "").toUpperCase().replace(/[^A-Z.\-]/g, "");

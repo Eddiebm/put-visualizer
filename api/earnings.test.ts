@@ -28,3 +28,16 @@ describe("api/earnings — origin gating", () => {
     expect(res.status).not.toBe(403);
   });
 });
+
+describe("api/earnings — rate limiting", () => {
+  it("returns 429 after RATE_LIMIT requests from the same client", async () => {
+    const { default: handler } = await import("./earnings");
+    let last;
+    for (let i = 0; i < 61; i++) {
+      last = await handler(new Request("http://x/api/earnings?expiration=2026-01-16", {
+        headers: { "x-forwarded-for": "9.9.9.9" },
+      }));
+    }
+    expect(last!.status).toBe(429);
+  });
+});

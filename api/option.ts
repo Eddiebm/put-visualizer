@@ -1,6 +1,13 @@
 export const config = { runtime: "edge" };
 
 import { corsHeaders, rejectOrigin } from "./_cors";
+import { rateLimit, clientKey, rateLimitResponse } from "./_rateLimit";
+
+// See api/quote.ts — same reasoning. Sized higher than quote's since a
+// scan can call this once per candidate strike across the ~40-symbol
+// watchlist.
+const RATE_LIMIT = 200;
+const RATE_WINDOW_MS = 5 * 60_000;
 
 // Real put-option premium from Alpaca's options market data (indicative feed,
 // ~15-min delayed on the free tier). Given an underlying, an expiration date,
@@ -13,6 +20,9 @@ export default async function handler(req: Request): Promise<Response> {
   const ch = corsHeaders(req);
   const originRejection = rejectOrigin(req);
   if (originRejection) return originRejection;
+
+  const rl = rateLimit(clientKey(req), RATE_LIMIT, RATE_WINDOW_MS);
+  if (!rl.allowed) return rateLimitResponse(rl, ch);
 
   const { searchParams } = new URL(req.url);
   const symbol = (searchParams.get("symbol") || "").toUpperCase().replace(/[^A-Z.\-]/g, "");

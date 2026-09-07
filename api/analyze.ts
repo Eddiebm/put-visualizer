@@ -2,8 +2,13 @@ export const config = { runtime: "edge" };
 
 import { corsHeaders, rejectOrigin } from "./_cors";
 import { timingSafeEqual } from "./_auth";
+import { rateLimit, clientKey, rateLimitResponse } from "./_rateLimit";
 
 const MAX_STOCKS = 25;
+// See api/chat.ts — same proxy-abuse concern, same fix. A bit more
+// generous since one call can cover a whole "Compare stocks" batch.
+const RATE_LIMIT = 15;
+const RATE_WINDOW_MS = 5 * 60_000;
 
 interface StockInput {
   sym: string;
@@ -27,6 +32,9 @@ export default async function handler(req: Request): Promise<Response> {
   if (req.method !== "POST") return json({ error: "method_not_allowed" }, 405, ch);
   const originRejection = rejectOrigin(req);
   if (originRejection) return originRejection;
+
+  const rl = rateLimit(clientKey(req), RATE_LIMIT, RATE_WINDOW_MS);
+  if (!rl.allowed) return rateLimitResponse(rl, ch);
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return json({ available: false, reason: "no_key" }, 200, ch);

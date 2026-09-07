@@ -2,9 +2,16 @@ export const config = { runtime: "edge" };
 
 import { corsHeaders, rejectOrigin } from "./_cors";
 import { timingSafeEqual } from "./_auth";
+import { rateLimit, clientKey, rateLimitResponse } from "./_rateLimit";
 
 const MAX_MESSAGES = 20;
 const MAX_MSG_CHARS = 2000;
+// Costs real money per call (proxies to Anthropic) — keep this the
+// tightest limit of any endpoint. Generous enough for an actual
+// back-and-forth conversation, tight enough to blunt a runaway retry
+// loop or a brute-force attempt against AI_ACCESS_KEY.
+const RATE_LIMIT = 20;
+const RATE_WINDOW_MS = 5 * 60_000;
 
 interface ChatMessage {
   role: string;
@@ -43,6 +50,12 @@ export default async function handler(req: Request): Promise<Response> {
   }
   const originRejection = rejectOrigin(req);
   if (originRejection) return originRejection;
+
+  // Runs before the access-key check, on purpose — a brute-force attempt
+  // against AI_ACCESS_KEY counts against the caller's limit too, not just
+  // successful requests.
+  const rl = rateLimit(clientKey(req), RATE_LIMIT, RATE_WINDOW_MS);
+  if (!rl.allowed) return rateLimitResponse(rl, ch);
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {

@@ -1,6 +1,15 @@
 export const config = { runtime: "edge" };
 
 import { corsHeaders, rejectOrigin } from "./_cors";
+import { rateLimit, clientKey, rateLimitResponse } from "./_rateLimit";
+
+// No access key on this one — it's public market data, not a per-call
+// cost like the AI endpoints. Origin-gating (above) is the main defense;
+// this just caps a single client's raw request volume. Sized well above
+// any real scan (the full watchlist is ~40 symbols) so normal use never
+// gets near it.
+const RATE_LIMIT = 150;
+const RATE_WINDOW_MS = 5 * 60_000;
 
 interface QuoteResult {
   symbol: string;
@@ -17,6 +26,9 @@ export default async function handler(req: Request): Promise<Response> {
   const ch = corsHeaders(req);
   const originRejection = rejectOrigin(req);
   if (originRejection) return originRejection;
+
+  const rl = rateLimit(clientKey(req), RATE_LIMIT, RATE_WINDOW_MS);
+  if (!rl.allowed) return rateLimitResponse(rl, ch);
 
   const { searchParams } = new URL(req.url);
   const symbol = (searchParams.get("symbol") || "")

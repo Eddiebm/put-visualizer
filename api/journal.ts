@@ -2,6 +2,7 @@ export const config = { runtime: "edge" };
 
 import { corsHeaders, rejectOrigin } from "./_cors";
 import { timingSafeEqual } from "./_auth";
+import { rateLimit, clientKey, rateLimitResponse } from "./_rateLimit";
 
 // Server-side backup for the trade journal. Without this, the journal
 // (the only record of real trades) lives ONLY in one browser's localStorage
@@ -12,10 +13,13 @@ import { timingSafeEqual } from "./_auth";
 //
 // Auth: a single shared secret (JOURNAL_ACCESS_KEY), sent as the
 // `x-journal-key` header and compared with timingSafeEqual (api/_auth.ts)
-// rather than `!==`, since there's no rate limiting in front of this
-// endpoint. This is a personal single-user app with no account system — a
-// shared secret is the lightweight equivalent of a PIN, not a substitute
-// for real auth. Don't reuse this pattern for anything multi-user.
+// rather than `!==`. This is a personal single-user app with no account
+// system — a shared secret is the lightweight equivalent of a PIN, not a
+// substitute for real auth. Don't reuse this pattern for anything
+// multi-user. RATE_LIMIT below (api/_rateLimit.ts) caps both wrong-key
+// guesses and legitimate sync volume from one client.
+const RATE_LIMIT = 60;
+const RATE_WINDOW_MS = 5 * 60_000;
 //
 // Storage model: full-replace sync, not incremental diffing. The client
 // already holds the whole journal array as one piece of React state, so on
@@ -39,6 +43,9 @@ export default async function handler(req: Request): Promise<Response> {
   const ch = corsHeaders(req);
   const originRejection = rejectOrigin(req);
   if (originRejection) return originRejection;
+
+  const rl = rateLimit(clientKey(req), RATE_LIMIT, RATE_WINDOW_MS);
+  if (!rl.allowed) return rateLimitResponse(rl, ch);
 
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
   const databaseId = process.env.CLOUDFLARE_D1_DATABASE_ID;

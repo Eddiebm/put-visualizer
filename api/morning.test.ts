@@ -29,3 +29,17 @@ describe("api/morning — origin gating", () => {
     expect(res.status).not.toBe(403);
   });
 });
+
+describe("api/morning — rate limiting", () => {
+  it("returns 429 after RATE_LIMIT requests from the same client", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network disabled in test")));
+    const { default: handler } = await import("./morning");
+    let last;
+    for (let i = 0; i < 31; i++) {
+      last = await handler(new Request("http://x/api/morning", {
+        headers: { "x-forwarded-for": "9.9.9.9" },
+      }));
+    }
+    expect(last!.status).toBe(429);
+  });
+});

@@ -29,3 +29,16 @@ describe("api/option — origin gating", () => {
     expect(res.status).not.toBe(403);
   });
 });
+
+describe("api/option — rate limiting", () => {
+  it("returns 429 after RATE_LIMIT requests from the same client", async () => {
+    const { default: handler } = await import("./option");
+    let last;
+    for (let i = 0; i < 201; i++) {
+      last = await handler(new Request("http://x/api/option?symbol=AAPL&expiration=2026-01-16&strike=190", {
+        headers: { "x-forwarded-for": "9.9.9.9" },
+      }));
+    }
+    expect(last!.status).toBe(429);
+  });
+});

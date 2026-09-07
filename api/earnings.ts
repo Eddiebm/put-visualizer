@@ -1,6 +1,13 @@
 export const config = { runtime: "edge" };
 
 import { corsHeaders, rejectOrigin } from "./_cors";
+import { rateLimit, clientKey, rateLimitResponse } from "./_rateLimit";
+
+// See api/quote.ts — same reasoning. Bulk mode covers the whole watchlist
+// in one call, so real usage is a handful of calls per scan, not per
+// symbol — this limit is mostly just a backstop.
+const RATE_LIMIT = 60;
+const RATE_WINDOW_MS = 5 * 60_000;
 
 interface EarningsEvent {
   symbol: string;
@@ -15,6 +22,9 @@ export default async function handler(req: Request): Promise<Response> {
   const ch = corsHeaders(req);
   const originRejection = rejectOrigin(req);
   if (originRejection) return originRejection;
+
+  const rl = rateLimit(clientKey(req), RATE_LIMIT, RATE_WINDOW_MS);
+  if (!rl.allowed) return rateLimitResponse(rl, ch);
 
   const { searchParams } = new URL(req.url);
   const symbol = (searchParams.get("symbol") || "").toUpperCase().replace(/[^A-Z.\-]/g, "");
