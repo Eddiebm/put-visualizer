@@ -32,6 +32,7 @@ import { PortfolioView } from "./components/PortfolioView";
 import { WeeklyReport } from "./components/WeeklyReport";
 import { DayReview } from "./components/DayReview";
 import { LearnView } from "./components/LearnView";
+import { Holdings } from "./components/Holdings";
 import { AssignmentView } from "./components/AssignmentView";
 
 // Local UI fetch-status shapes — not shared domain types, just what this
@@ -81,6 +82,7 @@ const TABS = [
   { key: "calculator", label: "Calculator" },
   { key: "compare", label: "Compare stocks" },
   { key: "portfolio", label: "📋 Sarah's book" },
+  { key: "holdings", label: "💼 Holdings" },
   { key: "weekly", label: "📈 Elena's report" },
   { key: "review", label: "Review" },
   { key: "learn", label: "📚 Learn" },
@@ -502,6 +504,8 @@ export default function App() {
             }}
           />
         )}
+
+        {tab === "holdings" && <Holdings />}
 
         {tab === "weekly" && <WeeklyReport journal={journal} />}
 

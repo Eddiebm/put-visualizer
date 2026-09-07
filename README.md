@@ -27,6 +27,9 @@ same shape a small trading desk actually runs:
 - **📋 Sarah's book** — "what's open, and what does it add up to?" A cross-position view:
   total collateral locked, aggregate bad-week loss, days to expiration, and an earnings-risk
   flag per position — the numbers no single trade's calculator page shows on its own.
+- **💼 Holdings** — "I already own this stock — when should I sell it?" Every other tab is
+  about selling options; this is the one place for a plain stock position, wherever it came
+  from. See **Tracking shares you already own** below.
 - **📈 Elena's report** — "how did the week go?" Realized P&L grouped by the week a trade
   closed, wins and losses both, with average return on collateral always shown next to the
   worst single loss, never alone.
@@ -203,6 +206,38 @@ distributed abuse, wire up Vercel KV or Upstash Redis instead and swap out `_rat
 internals; every call site (`rateLimit()`/`clientKey()`/`rateLimitResponse()`) stays the
 same.
 
+## Tracking shares you already own
+
+Everywhere else in this app is about selling options — collecting premium, not owning the
+stock outright (unless you get assigned). **💼 Holdings** is the one tab for a different
+question: "I already own this stock — when should I sell it?" Add a ticker, share count,
+and cost basis (shares from anywhere, not just an assignment logged in this app), and each
+position gets three independent, honest reads (`src/lib/holdings.ts`):
+
+1. **Your rule** — the take-profit % / stop-loss % you set when you added the position
+   (defaults: +20% / -10%), checked against the live price.
+2. **Technical** — a plain trend/momentum read on the stock itself (50-/200-day averages,
+   RSI), independent of what you paid. Deliberately simpler than Alex's scan's full score,
+   which is calibrated for "is this a good new entry" (position sizing, affordability,
+   earnings risk) — none of which answers "should I exit a position I already hold." A
+   "sell" verdict here requires a **confirmed** downtrend — below both the 50- and 200-day
+   averages; a holding with under 200 days of history has no 200-day average yet, and that's
+   treated as "unconfirmed," not "broken."
+3. **Bottom line** — what happens when the two agree, or don't. Not a vote that gets settled
+   by "2 out of 2" false precision: both saying sell is a sell; one saying sell and the other
+   not is called out as mixed, explicitly, rather than averaged into something that looks
+   more confident than it is.
+
+**Be honest about what this is.** A take-profit/stop-loss percentage is a number you chose,
+not a law of markets. A technical read can be wrong, and this one is a simple three-input
+read, not a sophisticated model. None of it places an order — every verdict is something to
+read and decide on, the same as everywhere else in this app. Live price and history come
+from the same `/api/quote` and `/api/history` endpoints Alex's scan uses (see **Enabling
+live Alpaca data** above); without a live feed configured, positions still track and their
+rule-based verdict still works — only the technical read needs price history to say
+anything. Holdings are saved to `localStorage` only (`csp_holdings_v1`) — there's no
+server-side backup for this tab the way there is for the journal.
+
 ## A note on the tastytrade integration
 
 `api/tasty.ts` and the "Connect Tastytrade" button talk to tastytrade's **live production
@@ -241,7 +276,7 @@ tree is TypeScript now (`strict: true`) — see **Since then** below.
 ## Running the tests and linter
 
 ```bash
-npm test          # Vitest — 288 tests: every pure module in src/lib/, every api/*.ts
+npm test          # Vitest — 312 tests: every pure module in src/lib/, every api/*.ts
                   # Edge function, and every component in src/components/ (RTL)
 npm run typecheck # tsc --noEmit — the primary safety net now (strict: true)
 npm run lint      # ESLint — react-hooks rules (rules-of-hooks, exhaustive-deps)
@@ -401,6 +436,15 @@ aggregation, grouping closed trades by ISO week).
     session token first. Deliberately a zero-dependency, best-effort in-memory limiter, not
     a Vercel KV/Upstash Redis integration — see **Rate limiting** above for why, and what
     the honest limits of that choice are.
+16. Added **💼 Holdings** — every other tab is about selling options, this is the only
+    place for a plain stock position, wherever it came from. Three independent reads per
+    position (`src/lib/holdings.ts`): a user-set take-profit/stop-loss rule, a plain
+    technical trend/RSI read, and a "bottom line" that calls out mixed signals explicitly
+    instead of averaging them into false confidence. Building `technicalVerdict()` caught a
+    real bug in its own first draft before it shipped: a holding under 200 days old (no
+    200-day average yet) was reading as a confirmed downtrend ("sell") just because that
+    average was `null`, rather than "unconfirmed" ("watch") — the tests written to cover the
+    watch-only case caught it immediately. See **Tracking shares you already own** above.
 
 **Still open:** backtesting whether Alex's scan's scoring weights (ported as-is from
 `stock-coach`) actually predict anything — they're currently unvalidated against
