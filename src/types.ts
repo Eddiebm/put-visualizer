@@ -34,6 +34,12 @@ export interface JournalEntry {
   closedAt?: string;
   closePrice?: number;
   realizedPnl?: number;
+  // Multiplier of credit collected at which Journal flags a stop-loss —
+  // e.g. 2 means "close if the loss exceeds 2x what was collected".
+  // User-configurable at log time (see the "Stop-loss (× credit)" calculator
+  // field); optional so older entries logged before this existed still work
+  // — src/components/Journal.tsx falls back to 2 when it's missing.
+  stopLossMultiplier?: number;
 }
 
 // The plain-object strategy description passed to stratPnl/buildModel —

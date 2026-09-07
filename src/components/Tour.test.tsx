@@ -7,7 +7,7 @@ import type { Defaults } from "../appConstants";
 const putInputs: Defaults = {
   mode: "put", strike: 50, premium: 1.5, longStrike: 45, longPremium: 0.5,
   callStrike: 60, callPremium: 1.2, spot: 55, contracts: 2, dropPct: 20,
-  capital: 500, iv: null,
+  capital: 500, iv: null, stopLossMultiplier: 2,
 };
 
 describe("buildTourSteps", () => {

@@ -316,8 +316,9 @@ tree is TypeScript now (`strict: true`) — see **Since then** below.
 ## Running the tests and linter
 
 ```bash
-npm test          # Vitest — 323 tests: every pure module in src/lib/, every api/*.ts
-                  # Edge function, and every component in src/components/ (RTL)
+npm test          # Vitest — 339 tests: every pure module in src/lib/, every api/*.ts
+                  # Edge function, every component in src/components/ (RTL), and
+                  # App.tsx's own orchestration (tabs, sync, tour, journal, Tasty)
 npm run typecheck # tsc --noEmit — the primary safety net now (strict: true)
 npm run lint      # ESLint — react-hooks rules (rules-of-hooks, exhaustive-deps)
 ```
@@ -522,6 +523,26 @@ aggregation, grouping closed trades by ISO week).
     only ever worked because Vite's resolver silently falls back to a same-named file with
     a different extension when the literal path doesn't exist. Corrected to the real
     filename rather than continuing to rely on that undocumented fallback.
+22. Added `App.tsx`'s own test suite (`src/App.test.tsx`, 12 tests) — every child
+    component already had its own tests, but the orchestration logic in `App.tsx` itself
+    (tab switching, `localStorage` persistence, the journal-sync pull/push gating, the
+    Tastytrade buying-power sync, the first-run tour) had none. Writing it caught a real
+    bug: loading a trade from **Today's picks** or **Compare stocks** set the calculator's
+    strike to the exact one the scan validated has a real premium, then immediately called
+    `selectCompany()`, which reset that strike back to the ticker's generic
+    snapshot-rounded price — silently swapping in a different, unvalidated strike (e.g. a
+    real MSFT pick at $300 landed on $375 instead). `selectCompany` now takes a
+    `keepStrike` option, set by both of those call sites, so a caller that already picked
+    a specific strike keeps it.
+23. Made the Journal's options stop-loss user-configurable, closing the gap with
+    **💼 Holdings**' stock stop-loss (a user-set %). The two mechanisms are legitimately
+    different — options risk is naturally sized in multiples of the credit collected, not
+    a percentage of a share price — but the Journal's was a fixed `credit × 2` with no way
+    to change it, while Holdings let you set your own threshold per position. Added a
+    "Stop-loss (× credit)" calculator field (`inputs.stopLossMultiplier`, defaulting to the
+    original 2×), stored per-entry (`JournalEntry.stopLossMultiplier`) at log time so past
+    trades keep whatever rule was in effect when they were logged, with older entries
+    (logged before this existed) falling back to 2× exactly as before.
 
 **Still open:** backtesting whether Alex's scan's scoring weights (ported as-is from
 `stock-coach`) actually predict anything — they're currently unvalidated against

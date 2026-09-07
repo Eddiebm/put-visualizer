@@ -108,6 +108,7 @@ export interface Defaults {
   dropPct: number;
   capital: number;
   iv: number | null;
+  stopLossMultiplier: number;
 }
 
 export const DEFAULTS: Defaults = {
@@ -123,6 +124,7 @@ export const DEFAULTS: Defaults = {
   dropPct: 20,
   capital: 500,
   iv: null,
+  stopLossMultiplier: 2,
 };
 
 export function loadInputs(): Defaults {

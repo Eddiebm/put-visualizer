@@ -230,7 +230,14 @@ export default function App() {
       .catch(() => setPremQuote({ status: "error" }));
   }
 
-  function selectCompany(sym: string) {
+  // `keepStrike`: skip resetting strike/spot to the company's generic
+  // snapshot price. Set this when the caller already computed a specific
+  // strike of its own (a "Today's picks" or "Compare stocks" pick carries
+  // the exact strike its scan validated has a real premium) — without it,
+  // this function's own snapshot-rounded strike would silently overwrite
+  // that pick's strike right after the caller set it, both on the initial
+  // snapshot and again once the live quote resolves.
+  function selectCompany(sym: string, opts?: { keepStrike?: boolean }) {
     setTicker(sym);
     setRvol(null);
     setDelta(null);
@@ -238,20 +245,24 @@ export default function App() {
     const c = COMPANIES.find((x) => x.ticker === sym);
     if (!c) return;
 
-    const snapStrike = roundStrike(c.price);
-    setInputs((s) => ({ ...s, strike: snapStrike, spot: snapStrike }));
-    appliedRef.current = snapStrike;
+    if (!opts?.keepStrike) {
+      const snapStrike = roundStrike(c.price);
+      setInputs((s) => ({ ...s, strike: snapStrike, spot: snapStrike }));
+      appliedRef.current = snapStrike;
+    }
     setQuote({ status: "loading", price: c.price, source: "snapshot" });
 
     fetch(`/api/quote?symbol=${encodeURIComponent(sym)}`)
       .then((r) => (r.ok ? r.json() : Promise.reject()))
       .then((d) => {
         if (!d || !Number.isFinite(d.price)) return Promise.reject();
-        const liveStrike = roundStrike(d.price);
-        setInputs((s) =>
-          num(s.strike) === appliedRef.current ? { ...s, strike: liveStrike, spot: liveStrike } : s
-        );
-        appliedRef.current = liveStrike;
+        if (!opts?.keepStrike) {
+          const liveStrike = roundStrike(d.price);
+          setInputs((s) =>
+            num(s.strike) === appliedRef.current ? { ...s, strike: liveStrike, spot: liveStrike } : s
+          );
+          appliedRef.current = liveStrike;
+        }
         setQuote({ status: "live", price: d.price, date: d.date, source: "live" });
       })
       .catch(() => setQuote({ status: "snapshot", price: c.price, source: "snapshot" }));
@@ -369,6 +380,7 @@ export default function App() {
       credit: model.credit,
       collateral: model.collateral,
       status: "open",
+      stopLossMultiplier: inputs.stopLossMultiplier,
     };
     setJournal((j) => [entry, ...j]);
   }
@@ -460,7 +472,7 @@ export default function App() {
                 longPremium: round2(pick.netCredit < pick.premium ? pick.premium - pick.netCredit : pick.premium * 0.4),
                 iv: pick.iv ?? null,
               }));
-              selectCompany(pick.sym);
+              selectCompany(pick.sym, { keepStrike: true });
               window.scrollTo({ top: 0, behavior: "smooth" });
             }}
           />
@@ -476,7 +488,7 @@ export default function App() {
             onLoad={(sym, strike, prem) => {
               setTicker(sym);
               setInputs((s) => ({ ...s, strike, premium: prem, spot: strike }));
-              selectCompany(sym);
+              selectCompany(sym, { keepStrike: true });
               setTab("calculator");
               window.scrollTo({ top: 0, behavior: "smooth" });
             }}
@@ -608,6 +620,12 @@ export default function App() {
             prefix="$"
             value={inputs.capital}
             onChange={(v) => setInputs((s) => ({ ...s, capital: num(v) }))}
+          />
+          <Field
+            label="Stop-loss (× credit)"
+            suffix="×"
+            value={inputs.stopLossMultiplier}
+            onChange={(v) => setInputs((s) => ({ ...s, stopLossMultiplier: num(v) }))}
           />
         </section>
 

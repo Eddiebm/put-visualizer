@@ -123,4 +123,30 @@ describe("JournalRow", () => {
     render(<JournalRow e={entry()} onClose={() => {}} onDelete={() => {}} />);
     expect(screen.getByText(/Stop-loss rule: close if loss exceeds/)).toBeInTheDocument();
   });
+
+  it("falls back to a 2x multiplier for entries logged before stopLossMultiplier existed", () => {
+    render(<JournalRow e={entry()} onClose={() => {}} onDelete={() => {}} />); // no stopLossMultiplier on the entry
+    // credit=350 -> limit = $700 at the default 2x
+    expect(screen.getByText(/close if loss exceeds \$700 \(2× credit collected\)/)).toBeInTheDocument();
+  });
+
+  it("honors a per-entry stopLossMultiplier in the limit shown", () => {
+    // credit=350, multiplier=1 -> limit is $350, not the default $700
+    render(<JournalRow e={entry({ stopLossMultiplier: 1 })} onClose={() => {}} onDelete={() => {}} />);
+    expect(screen.getByText(/close if loss exceeds \$350 \(1× credit collected\)/)).toBeInTheDocument();
+  });
+
+  it("triggers a stop-loss at a tighter multiplier where the default 2x would not have fired yet", async () => {
+    vi.stubGlobal("fetch", vi.fn((url) => {
+      // credit=350 (contracts=1); an $8 option price -> unrealized loss of 350 - 800 = -450.
+      // At the default 2x (limit $700), -450 is not past -700 — no hit. At a 1x
+      // multiplier (limit $350), -450 IS past -350 — a hit.
+      if (url.includes("/api/option")) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ available: true, premium: 8 }) });
+      }
+      return Promise.resolve({ ok: false });
+    }));
+    render(<JournalRow e={entry({ stopLossMultiplier: 1 })} onClose={() => {}} onDelete={() => {}} />);
+    await waitFor(() => expect(screen.getByText(/Stop-loss hit/)).toBeInTheDocument());
+  });
 });

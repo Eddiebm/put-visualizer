@@ -98,7 +98,11 @@ export function JournalRow({ e, onClose, onDelete }: JournalRowProps) {
     }
   }, [open, e.ticker, e.putStrike, e.expiration]);
 
-  const stopLossAt = e.credit * 2; // close if loss exceeds 2× what was collected
+  // User-configurable at log time (the "Stop-loss (× credit)" calculator
+  // field, default 2×); older entries logged before that existed fall back
+  // to the original fixed 2×.
+  const stopLossMultiplier = e.stopLossMultiplier ?? 2;
+  const stopLossAt = e.credit * stopLossMultiplier; // close if loss exceeds this multiple of what was collected
   const unrealizedPnl = currentOptionPrice != null && e.putPrem > 0 && e.contracts > 0
     ? e.credit - (currentOptionPrice * 100 * e.contracts)
     : null;
@@ -151,7 +155,7 @@ export function JournalRow({ e, onClose, onDelete }: JournalRowProps) {
         )}
         {!stopLossHit && !stopLossWarning && open && (
           <div style={{ marginTop: 4, fontSize: 11, color: "#94a3b8" }}>
-            Stop-loss rule: close if loss exceeds {money(stopLossAt)}
+            Stop-loss rule: close if loss exceeds {money(stopLossAt)} ({stopLossMultiplier}× credit collected)
             {unrealizedPnl != null && (
               <span style={{ marginLeft: 8, color: unrealizedPnl >= 0 ? "#16a34a" : "#f97316" }}>
                 · current P&L: {unrealizedPnl >= 0 ? "+" : ""}{money(unrealizedPnl)}
