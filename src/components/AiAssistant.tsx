@@ -98,7 +98,7 @@ export function AiAssistant({ context, aiKey }: AiAssistantProps) {
               <div style={{ fontWeight: 700, fontSize: 14, color: "#fff" }}>AI Coach</div>
               <div style={{ fontSize: 11, color: "#94a3b8" }}>Plain English · No jargon</div>
             </div>
-            <button type="button" onClick={() => setOpen(false)} style={{ background: "none", border: "none", color: "#94a3b8", fontSize: 18, cursor: "pointer", lineHeight: 1 }}>×</button>
+            <button type="button" onClick={() => setOpen(false)} aria-label="Close AI coach" style={{ background: "none", border: "none", color: "#94a3b8", fontSize: 18, cursor: "pointer", lineHeight: 1 }}>×</button>
           </div>
           {/* Messages */}
           <div style={{ flex: 1, overflowY: "auto", padding: "12px 14px", display: "flex", flexDirection: "column", gap: 10 }}>

@@ -24,6 +24,16 @@ describe("AiAssistant", () => {
     expect(screen.getByText(/Ask me anything about today's trades/)).toBeInTheDocument();
   });
 
+  it("has an accessible label on the close button, not just a bare ×", async () => {
+    const user = userEvent.setup();
+    render(<AiAssistant context={{}} aiKey="test-ai-key" />);
+    await user.click(screen.getByTitle("Ask your AI coach"));
+    const closeBtn = screen.getByLabelText("Close AI coach");
+    expect(closeBtn).toBeInTheDocument();
+    await user.click(closeBtn);
+    expect(screen.queryByText(/Ask me anything about today's trades/)).not.toBeInTheDocument();
+  });
+
   it("sends a message and shows the coach's reply", async () => {
     fetch.mockResolvedValue({ json: () => Promise.resolve({ available: true, reply: "Here's the plain-English answer." }) });
     const user = userEvent.setup();
