@@ -316,7 +316,7 @@ tree is TypeScript now (`strict: true`) — see **Since then** below.
 ## Running the tests and linter
 
 ```bash
-npm test          # Vitest — 367 tests: every pure module in src/lib/, every api/*.ts
+npm test          # Vitest — 389 tests: every pure module in src/lib/, every api/*.ts
                   # Edge function, every component in src/components/ (RTL),
                   # App.tsx's own orchestration (tabs, sync, tour, journal, Tasty),
                   # and the Alex's-scan backtest harness (scripts/backtest/)
@@ -565,6 +565,18 @@ aggregation, grouping closed trades by ISO week).
     parser's tests cover quoted fields, bad rows, and a full custom column-map override.
     Verified the Norgate path end-to-end against a real (synthetic) exported CSV directory,
     not just the credential-check message.
+26. Closed the survivorship-bias gap the previous entry left open: added `--universe=<path>`
+    (`universe.ts`), a point-in-time index-membership gate independent of `--source` — a CSV
+    of which symbol was eligible from when to when, so the backtest can include names that
+    have since been delisted or dropped off today's `COMPANIES` watchlist instead of only
+    ever grading today's survivors. Given without an explicit `--tickers`, the ticker list
+    now expands to every symbol that ever appears in the universe file. Extracted the CSV
+    header-matching helpers shared with `norgateSource.ts` into `csv.ts` rather than
+    duplicating them a second time. 22 more tests (`universe.test.ts`'s parsing/eligibility
+    cases, plus two in `engine.test.ts` covering the new gate — including that a symbol can
+    be eligible again in a later, separate window after dropping out). Verified end-to-end
+    against a synthetic Norgate-shaped export plus a synthetic constituents file, not just
+    the unit tests in isolation.
 
 **Still open:** actually running the backtest below against live data — the harness is
 built and tested, but validating anything needs a real deployment's market-data keys,
@@ -596,6 +608,7 @@ npm run backtest:alex -- --dry-run
 npm run backtest:alex                                              # Alpaca, defaults
 npm run backtest:alex -- --source=tiingo --years=10
 npm run backtest:alex -- --source=norgate --norgate-dir=./norgate-export
+npm run backtest:alex -- --source=norgate --norgate-dir=./norgate-export --universe=./sp500-constituents.csv
 npm run backtest:alex -- --years=5 --horizons=5,10,20 --stride=5
 npm run backtest:alex -- --tickers=AAPL,MSFT,NVDA --out=my-run.json
 ```
@@ -613,11 +626,20 @@ caps `days` at 400 (a live-app design choice; no real caller ever needs more), b
 multi-year walk-forward backtest needs far more trailing history than any single live
 request does.
 
-None of Alpaca/Tiingo/Norgate solve **survivorship bias in the ticker list itself**: Alex's
-scan's `COMPANIES` watchlist (`src/appConstants.ts`) is today's ~40 large caps/ETFs —
-backtesting against any of these three sources still excludes whatever would have been in
-scope but later got delisted or went to zero. Norgate's own historical-index-constituent
-data can fix this (it just isn't wired into this script yet); Alpaca and Tiingo can't.
+**Survivorship bias in the ticker list itself** — Alex's scan's `COMPANIES` watchlist
+(`src/appConstants.ts`) is today's ~40 large caps/ETFs, so backtesting against it, no
+matter how deep the price history, still excludes whatever would have been in scope back
+then but later got delisted or went to zero. `--universe=<path>` (a CSV of
+`Symbol,StartDate,EndDate` membership intervals — blank `EndDate` means still a member)
+closes this: it gates evaluation to only the days a symbol was actually eligible, and,
+given without an explicit `--tickers`, expands the ticker list to every symbol that ever
+appears in the file rather than just today's survivors. `--universe-columns` overrides its
+header names the same way `--norgate-columns` does. This is source-agnostic — it works
+with any `--source` — but getting a *delisted* name's actual price history still generally
+needs `--source=norgate`, since Alpaca/Tiingo don't carry data for tickers that no longer
+trade. Norgate's own `norgatedata` package can export this membership data directly (e.g.
+S&P 500 constituents back to 1957); NDU's Export Task Manager is the path to a CSV of it,
+same as for price bars.
 
 **What it doesn't validate, on purpose, not by accident:**
 - **Earnings risk.** `hasEarnings` is fixed to `false` throughout — there's no historical

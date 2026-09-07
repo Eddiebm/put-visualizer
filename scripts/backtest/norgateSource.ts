@@ -22,9 +22,17 @@
 // handful of common aliases per field) rather than by position, and
 // --norgate-columns lets you override the expected header names outright
 // if your export uses something this doesn't already recognize.
+//
+// This only covers per-symbol price history. For Norgate's other headline
+// feature — survivorship-bias-free backtesting via historical index
+// constituents (which stock counted as "in the S&P 500" on any given past
+// date, delisted names included) — see universe.ts instead; that's a
+// different kind of export (membership intervals, not OHLCV) with its own
+// file format.
 
 import { readFileSync } from "node:fs";
 import type { Bar } from "../../src/types";
+import { csvLines, splitCsvLine, findColumnIndex } from "./csv";
 
 export interface NorgateColumnMap {
   date: string[];
@@ -44,54 +52,11 @@ export const DEFAULT_NORGATE_COLUMNS: NorgateColumnMap = {
   volume: ["volume", "vol"],
 };
 
-// Splits one CSV line into fields, honoring double-quoted fields that may
-// contain commas (NDU's exports are typically plain numeric/date and
-// wouldn't need this, but a quoted symbol/date field is cheap to support
-// correctly rather than silently mis-splitting one if it shows up).
-function splitCsvLine(line: string): string[] {
-  const fields: string[] = [];
-  let cur = "";
-  let inQuotes = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (inQuotes) {
-      if (ch === '"') {
-        if (line[i + 1] === '"') {
-          cur += '"';
-          i++;
-        } else {
-          inQuotes = false;
-        }
-      } else {
-        cur += ch;
-      }
-    } else if (ch === '"') {
-      inQuotes = true;
-    } else if (ch === ",") {
-      fields.push(cur);
-      cur = "";
-    } else {
-      cur += ch;
-    }
-  }
-  fields.push(cur);
-  return fields;
-}
-
-function findColumnIndex(headers: string[], aliases: string[]): number {
-  const normalized = headers.map((h) => h.trim().toLowerCase());
-  for (const alias of aliases) {
-    const idx = normalized.indexOf(alias);
-    if (idx !== -1) return idx;
-  }
-  return -1;
-}
-
 // Pure: parses NDU-exported CSV text into Bar[]. Rows with a non-positive
 // or unparseable close are skipped (mirrors dataSource.ts's `c > 0` filter
 // for the other providers) rather than producing a bad bar silently.
 export function parseNorgateCsv(csvText: string, columns: NorgateColumnMap = DEFAULT_NORGATE_COLUMNS): Bar[] {
-  const lines = csvText.split(/\r?\n/).filter((l) => l.trim().length > 0);
+  const lines = csvLines(csvText);
   if (lines.length === 0) return [];
 
   const headers = splitCsvLine(lines[0]);

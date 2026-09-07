@@ -18,8 +18,19 @@
 //     --norgate-dir=<path>, and --norgate-columns if your export's header
 //     names don't match the defaults.
 //
+// Independent of --source: --universe=<path> gates evaluation to a
+// point-in-time index universe (see universe.ts) — a CSV of which symbol
+// was eligible from when to when, closing the survivorship-bias gap in
+// COMPANIES (today's ~40 large caps/ETFs) by including names that have
+// since been delisted/dropped from the watchlist. When given without an
+// explicit --tickers, the ticker list defaults to every symbol that
+// *ever* appears in the universe file, not just today's COMPANIES.
+// --universe-columns overrides its header names, same idea as
+// --norgate-columns. Getting delisted names' actual *price* data still
+// generally requires --source=norgate — Alpaca/Tiingo don't carry it.
+//
 // See README.md's "Backtesting Alex's scan" section for the full
-// comparison of the three and what each does and doesn't fix.
+// comparison and what does/doesn't fix survivorship bias.
 //
 // Usage:
 //
@@ -27,6 +38,7 @@
 //   npm run backtest:alex                                      # Alpaca, defaults
 //   npm run backtest:alex -- --source=tiingo --years=10
 //   npm run backtest:alex -- --source=norgate --norgate-dir=./norgate-export
+//   npm run backtest:alex -- --source=norgate --norgate-dir=./norgate-export --universe=./sp500-constituents.csv
 //   npm run backtest:alex -- --tickers=AAPL,MSFT,NVDA --out=my-run.json
 
 import { writeFileSync } from "node:fs";
@@ -39,6 +51,15 @@ import {
   fetchDailyBarsTiingo,
 } from "./dataSource";
 import { loadNorgateBarsForSymbol, DEFAULT_NORGATE_COLUMNS, type NorgateColumnMap } from "./norgateSource";
+import {
+  loadConstituentsFromFile,
+  buildEligibilityIndex,
+  isSymbolEligible,
+  distinctSymbols,
+  DEFAULT_UNIVERSE_COLUMNS,
+  type UniverseColumnMap,
+  type MembershipInterval,
+} from "./universe";
 import { generateSyntheticBars } from "./syntheticData";
 import { walkForward, type WalkForwardSample } from "./engine";
 import { bucketByGrade, bucketByScoreDecile, type BucketStat } from "./stats";
@@ -53,11 +74,40 @@ interface Args {
   stride: number;
   minLookback: number;
   capital: number;
-  tickers: string[];
+  tickersArg?: string; // raw --tickers value, unresolved — see resolveTickers()
   out: string;
   dryRun: boolean;
   norgateDir?: string;
   norgateColumns?: NorgateColumnMap;
+  universe?: string;
+  universeColumns?: UniverseColumnMap;
+}
+
+// Overrides only the fields present in `arg` ("field:header,field:header"),
+// keeping every other field's default alias list — shared by
+// --norgate-columns and --universe-columns, which differ only in which
+// fields they have. Works on the loose Record shape and gets cast back to
+// the caller's real column-map type at the two call sites below: both
+// NorgateColumnMap and UniverseColumnMap are plain "every field is a
+// string[]" interfaces with no index signature, which TS won't unify with
+// a generic Record<string, string[]> constraint on its own.
+function parseColumnOverridesRaw(arg: string, defaults: Record<string, string[]>): Record<string, string[]> {
+  const map: Record<string, string[]> = {};
+  for (const [k, v] of Object.entries(defaults)) map[k] = [...v];
+  for (const pair of arg.split(",")) {
+    const [field, header] = pair.split(":");
+    if (!field || !header) continue;
+    if (field in map) map[field] = [header.trim().toLowerCase()];
+  }
+  return map;
+}
+
+function parseNorgateColumnOverrides(arg: string): NorgateColumnMap {
+  return parseColumnOverridesRaw(arg, DEFAULT_NORGATE_COLUMNS as unknown as Record<string, string[]>) as unknown as NorgateColumnMap;
+}
+
+function parseUniverseColumnOverrides(arg: string): UniverseColumnMap {
+  return parseColumnOverridesRaw(arg, DEFAULT_UNIVERSE_COLUMNS as unknown as Record<string, string[]>) as unknown as UniverseColumnMap;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -72,10 +122,8 @@ function parseArgs(argv: string[]): Args {
     throw new Error(`--source must be one of alpaca, tiingo, norgate (got "${source}")`);
   }
 
-  const columnsArg = get("norgate-columns");
-  const norgateColumns: NorgateColumnMap | undefined = columnsArg
-    ? parseNorgateColumnsArg(columnsArg)
-    : undefined;
+  const norgateColumnsArg = get("norgate-columns");
+  const universeColumnsArg = get("universe-columns");
 
   return {
     source,
@@ -84,39 +132,30 @@ function parseArgs(argv: string[]): Args {
     stride: Number(get("stride") ?? 5),
     minLookback: Number(get("min-lookback") ?? 250),
     capital: Number(get("capital") ?? 5000),
-    tickers: (get("tickers") ?? COMPANIES.map((c) => c.ticker).join(",")).split(","),
+    tickersArg: get("tickers"),
     out: get("out") ?? "scripts/backtest/last-run.json",
     dryRun: argv.includes("--dry-run"),
     norgateDir: get("norgate-dir"),
-    norgateColumns,
+    norgateColumns: norgateColumnsArg ? parseNorgateColumnOverrides(norgateColumnsArg) : undefined,
+    universe: get("universe"),
+    universeColumns: universeColumnsArg ? parseUniverseColumnOverrides(universeColumnsArg) : undefined,
   };
 }
 
-// Parses `date:D,open:O,high:H,low:L,close:C,volume:V` into a NorgateColumnMap,
-// overriding only the fields given — any field left unspecified keeps its
-// default alias list.
-function parseNorgateColumnsArg(arg: string): NorgateColumnMap {
-  const map: NorgateColumnMap = {
-    date: [...DEFAULT_NORGATE_COLUMNS.date],
-    open: [...DEFAULT_NORGATE_COLUMNS.open],
-    high: [...DEFAULT_NORGATE_COLUMNS.high],
-    low: [...DEFAULT_NORGATE_COLUMNS.low],
-    close: [...DEFAULT_NORGATE_COLUMNS.close],
-    volume: [...DEFAULT_NORGATE_COLUMNS.volume],
-  };
-  for (const pair of arg.split(",")) {
-    const [field, header] = pair.split(":");
-    if (!field || !header) continue;
-    if (field in map) map[field as keyof NorgateColumnMap] = [header.trim().toLowerCase()];
-  }
-  return map;
+// Explicit --tickers wins; otherwise, with --universe given, every symbol
+// that ever appears in it (the whole point — today's COMPANIES watchlist
+// would silently drop back to survivors-only); otherwise COMPANIES.
+function resolveTickers(args: Args, universeIntervals: MembershipInterval[] | null): string[] {
+  if (args.tickersArg) return args.tickersArg.split(",");
+  if (universeIntervals) return distinctSymbols(universeIntervals);
+  return COMPANIES.map((c) => c.ticker);
 }
 
-async function fetchBarsFor(sym: string, args: Args): Promise<Bar[]> {
+async function fetchBarsFor(sym: string, tickers: string[], args: Args): Promise<Bar[]> {
   if (args.dryRun) {
     // Distinct seed per ticker so a --dry-run doesn't compare a ticker
     // against an identical copy of itself.
-    const seed = args.tickers.indexOf(sym) + 2;
+    const seed = tickers.indexOf(sym) + 2;
     return generateSyntheticBars(50 + seed * 7, tradingDaysFor(args.years), seed);
   }
   if (args.source === "alpaca") {
@@ -165,18 +204,31 @@ async function main() {
     checkCredentials(args);
   }
 
+  let universeIntervals: MembershipInterval[] | null = null;
+  if (args.universe) {
+    try {
+      universeIntervals = loadConstituentsFromFile(args.universe, args.universeColumns ?? DEFAULT_UNIVERSE_COLUMNS);
+    } catch (err) {
+      fail(`Couldn't load --universe=${args.universe}: ${(err as Error).message}`);
+    }
+    console.log(`universe: ${universeIntervals!.length} membership intervals, ${distinctSymbols(universeIntervals!).length} distinct symbols`);
+  }
+  const eligibilityIndex = universeIntervals ? buildEligibilityIndex(universeIntervals) : null;
+
+  const tickers = resolveTickers(args, universeIntervals);
+
   console.log(
-    `source=${args.source} tickers=${args.tickers.length} years=${args.years} horizons=${args.horizons.join(",")} ` +
+    `source=${args.source} tickers=${tickers.length} years=${args.years} horizons=${args.horizons.join(",")} ` +
       `stride=${args.stride} minLookback=${args.minLookback} capital=${args.capital}`
   );
 
-  const spyBars = await fetchBarsFor("SPY", args);
+  const spyBars = await fetchBarsFor("SPY", tickers, args);
   console.log(`SPY: ${spyBars.length} bars`);
 
   const allSamples: WalkForwardSample[] = [];
-  for (const sym of args.tickers) {
+  for (const sym of tickers) {
     try {
-      const bars = await fetchBarsFor(sym, args);
+      const bars = await fetchBarsFor(sym, tickers, args);
       if (bars.length < args.minLookback) {
         console.warn(`  ${sym}: only ${bars.length} bars, below minLookback=${args.minLookback} — skipped`);
         continue;
@@ -186,6 +238,7 @@ async function main() {
         horizons: args.horizons,
         stride: args.stride,
         minLookback: args.minLookback,
+        isEligible: eligibilityIndex ? (d) => isSymbolEligible(eligibilityIndex, sym, d) : undefined,
       });
       allSamples.push(...samples);
       console.log(`  ${sym}: ${bars.length} bars -> ${samples.length} samples`);
@@ -212,7 +265,11 @@ async function main() {
 
   writeFileSync(
     args.out,
-    JSON.stringify({ args, generatedAt: new Date().toISOString(), byGrade, byDecile, sampleCount: allSamples.length }, null, 2)
+    JSON.stringify(
+      { args: { ...args }, tickers, generatedAt: new Date().toISOString(), byGrade, byDecile, sampleCount: allSamples.length },
+      null,
+      2
+    )
   );
   console.log(`\nFull results written to ${args.out}`);
 }

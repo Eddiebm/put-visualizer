@@ -125,4 +125,36 @@ describe("walkForward", () => {
     const bars = makeBars(260);
     expect(() => walkForward("TEST", bars, bars, { capital: 5000, horizons: [], stride: 1, minLookback: 250 })).toThrow();
   });
+
+  it("skips days isEligible rejects, but doesn't stop the walk — a symbol can be eligible again later", () => {
+    const bars = makeBars(300);
+    const spyBars = makeBars(300);
+    // Eligible only in a narrow middle window (indices ~260-270 by date),
+    // even though there's plenty of trailing/forward data outside it.
+    const eligibleStart = bars[260].t as string;
+    const eligibleEnd = bars[270].t as string;
+    const samples = walkForward("TEST", bars, spyBars, {
+      capital: 5000,
+      horizons: [5],
+      stride: 1,
+      minLookback: 250,
+      isEligible: (d) => d >= eligibleStart && d <= eligibleEnd,
+    });
+    expect(samples.length).toBeGreaterThan(0);
+    for (const s of samples) {
+      expect(s.asOfDate >= eligibleStart && s.asOfDate <= eligibleEnd).toBe(true);
+    }
+  });
+
+  it("produces no samples at all when isEligible rejects every day", () => {
+    const bars = makeBars(300);
+    const samples = walkForward("TEST", bars, bars, {
+      capital: 5000,
+      horizons: [5],
+      stride: 1,
+      minLookback: 250,
+      isEligible: () => false,
+    });
+    expect(samples).toEqual([]);
+  });
 });
