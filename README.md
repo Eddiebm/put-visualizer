@@ -316,7 +316,7 @@ tree is TypeScript now (`strict: true`) — see **Since then** below.
 ## Running the tests and linter
 
 ```bash
-npm test          # Vitest — 353 tests: every pure module in src/lib/, every api/*.ts
+npm test          # Vitest — 367 tests: every pure module in src/lib/, every api/*.ts
                   # Edge function, every component in src/components/ (RTL),
                   # App.tsx's own orchestration (tabs, sync, tour, journal, Tasty),
                   # and the Alex's-scan backtest harness (scripts/backtest/)
@@ -550,6 +550,21 @@ aggregation, grouping closed trades by ISO week).
     it with. The pure sampling/bucketing logic (`engine.ts`/`stats.ts`) is fully unit
     tested now (14 tests), including a regression test proving it never leaks a future
     bar into a historical day's score.
+25. Added two more data sources to the backtest harness, `--source=tiingo` and
+    `--source=norgate`, since Alpaca's free tier alone caps history at 2016. Tiingo is a
+    real second HTTP fetcher (`dataSource.ts`), using adjusted prices rather than raw —
+    correctly, since a raw series has a fake giant "move" at every stock split, which would
+    otherwise get read as a real, enormous single-day price change. Norgate turned out not
+    to have a REST API at all (it's a Windows-only desktop app requiring a running local
+    process and a paid subscription — see `norgateSource.ts`'s docstring), so what's wired
+    in instead is a CSV reader (`norgateSource.ts`) for the files Norgate's own Export Task
+    Manager produces, matching columns by header name (case/order-insensitive, with an
+    override flag for nonstandard exports) rather than assuming a fixed layout, since NDU's
+    export format is user-configurable. Both the Alpaca/Tiingo raw-record mapping and the
+    CSV parser are unit tested (14 more tests, 28 total in `scripts/backtest/`) — the CSV
+    parser's tests cover quoted fields, bad rows, and a full custom column-map override.
+    Verified the Norgate path end-to-end against a real (synthetic) exported CSV directory,
+    not just the credential-check message.
 
 **Still open:** actually running the backtest below against live data — the harness is
 built and tested, but validating anything needs a real deployment's market-data keys,
@@ -577,16 +592,32 @@ by score-decile.
 # Sanity-check the harness itself — synthetic data, no credentials needed:
 npm run backtest:alex -- --dry-run
 
-# The real thing, once ALPACA_KEY_ID/ALPACA_SECRET_KEY (the same credentials
-# api/history.ts uses) are set in the environment:
-npm run backtest:alex
+# The real thing — pick a --source (see the comparison below):
+npm run backtest:alex                                              # Alpaca, defaults
+npm run backtest:alex -- --source=tiingo --years=10
+npm run backtest:alex -- --source=norgate --norgate-dir=./norgate-export
 npm run backtest:alex -- --years=5 --horizons=5,10,20 --stride=5
 npm run backtest:alex -- --tickers=AAPL,MSFT,NVDA --out=my-run.json
 ```
 
-It calls Alpaca directly rather than going through `api/history.ts` — that endpoint caps
-`days` at 400 (a live-app design choice; no real caller ever needs more), but a multi-year
-walk-forward backtest needs far more trailing history than any single live request does.
+**Three sources, `--source=alpaca|tiingo|norgate` (default `alpaca`):**
+
+| Source | What it needs | History depth | Notes |
+|---|---|---|---|
+| `alpaca` | `ALPACA_KEY_ID`/`ALPACA_SECRET_KEY` (same as `api/history.ts`) | No trade data before 2016-01-01 on the free IEX feed | Called directly rather than through `api/history.ts`, which caps `days` at 400 — a live-app limit, not Alpaca's. Uses raw (unadjusted) prices, matching what the live app shows. |
+| `tiingo` | `TIINGO_API_KEY` (free, tiingo.com) | Often decades, for tickers Tiingo has covered a long time | Free up to 50 symbols/hour. Uses split/dividend-**adjusted** prices — the more defensible default for a from-scratch backtest, since a raw series has a fake giant "move" at every stock split. Don't directly compare Alpaca-sourced and Tiingo-sourced runs without accounting for that difference. |
+| `norgate` | `--norgate-dir=<path>`, a directory of `<SYMBOL>.csv` files **you export yourself** | Decades, survivorship-bias-free (includes delisted stocks) | Norgate has **no REST API** — data only reaches a machine via the Norgate Data Updater (NDU), a Windows/WSL2 desktop app requiring a paid subscription and a running NDU process. This script can't fetch that; it reads CSVs you export from NDU's Export Task Manager instead. `--norgate-columns=date:D,open:O,...` overrides the expected header names if your export doesn't match the (case-insensitive) defaults. See `norgateSource.ts`'s docstring for the full reasoning. |
+
+Alpaca and Tiingo are called directly rather than through `api/history.ts` — that endpoint
+caps `days` at 400 (a live-app design choice; no real caller ever needs more), but a
+multi-year walk-forward backtest needs far more trailing history than any single live
+request does.
+
+None of Alpaca/Tiingo/Norgate solve **survivorship bias in the ticker list itself**: Alex's
+scan's `COMPANIES` watchlist (`src/appConstants.ts`) is today's ~40 large caps/ETFs —
+backtesting against any of these three sources still excludes whatever would have been in
+scope but later got delisted or went to zero. Norgate's own historical-index-constituent
+data can fix this (it just isn't wired into this script yet); Alpaca and Tiingo can't.
 
 **What it doesn't validate, on purpose, not by accident:**
 - **Earnings risk.** `hasEarnings` is fixed to `false` throughout — there's no historical
@@ -601,8 +632,12 @@ walk-forward backtest needs far more trailing history than any single live reque
 The walk-forward/bucketing logic itself (`engine.ts`, `stats.ts`) is pure and fully unit
 tested (`engine.test.ts`, `stats.test.ts`, 14 tests) — including a regression test that
 plants a deliberate future price jump and asserts a day's score is unaffected by it, which
-is the one property this kind of backtest lives or dies on. Only the Alpaca-fetching layer
-(`dataSource.ts`) needs live credentials and is untestable without them.
+is the one property this kind of backtest lives or dies on. The raw-record → `Bar` mapping
+for Alpaca and Tiingo (`dataSource.test.ts`) and the Norgate CSV parser (`norgateSource.test.ts`,
+covering header case/order-insensitivity, quoted fields, bad rows, and a full custom
+column-map override) are unit tested too — only the actual network/file-system calls
+(fetching from Alpaca/Tiingo, reading a real NDU export) need live credentials or a real
+export and are untestable offline.
 
 **Do not** turn this into a "winning" app. Do not lead with annualized yield, win-rate, or
 "X% of puts expire worthless." Do not hide, net, or downplay losses. Do not add streak
