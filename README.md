@@ -313,6 +313,18 @@ aggregation, grouping closed trades by ISO week).
     endpoints have no rate limiting in front of them. The new helper hashes both sides
     first (SHA-256, always 32 bytes) so the comparison always does the same amount of work
     regardless of the secrets' length or content.
+13. Mobile pass. Verified with Playwright at 320-390px viewports (real phone widths), not
+    just by inspecting the CSS: the 4-way strategy toggle and the 8-tab main nav both
+    squeezed long labels into flex:1 slots with no wrap, clipping/overlapping text; the
+    floating status pills (journal backup, AI access key) and the Tastytrade connect
+    button are independently `position: fixed` with no awareness of each other, and at
+    320-375px wide their content literally overlapped (confirmed with bounding-box
+    measurements, not eyeballing). Fixed by making the toggle and the tab bar scroll
+    horizontally instead of squeezing (same `overflowX: auto` pattern already used for
+    the data tables), capping every floating popup's width with `min()` so none can render
+    off-screen, and collapsing the two bottom-left status pills to icon-only below 480px
+    so they can't collide with the bottom-right buttons — tapping the icon still opens the
+    full explanation. `page`/`shell` padding now uses `clamp()` instead of a fixed value.
 
 **Still open:** backtesting whether Alex's scan's scoring weights (ported as-is from
 `stock-coach`) actually predict anything — they're currently unvalidated against

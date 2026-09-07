@@ -416,7 +416,11 @@ export default function App() {
               How does this work?
             </button>
           </div>
-          <div style={{ display: "flex", gap: 4, borderBottom: "2px solid #e2e8f0", marginBottom: 0 }}>
+          {/* Eight tabs don't fit one row on a phone screen without either
+              clipping or wrapping mid-label. Scrolling horizontally (same
+              pattern as the data tables and the mode toggle) keeps every
+              tab reachable and every label intact instead. */}
+          <div style={{ display: "flex", gap: 4, borderBottom: "2px solid #e2e8f0", marginBottom: 0, overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
             {TABS.map(t => (
               <button
                 key={t.key}
@@ -427,7 +431,7 @@ export default function App() {
                   padding: "8px 16px", fontSize: 13, fontWeight: tab === t.key ? 700 : 500,
                   color: tab === t.key ? "#0f172a" : "#64748b",
                   borderBottom: tab === t.key ? "2px solid #0f172a" : "2px solid transparent",
-                  marginBottom: -2,
+                  marginBottom: -2, whiteSpace: "nowrap", flexShrink: 0,
                 }}
               >
                 {t.label}

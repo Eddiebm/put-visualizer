@@ -75,7 +75,8 @@ export function TastyConnect({ tasty, onConnect, onDisconnect }: TastyConnectPro
         position: "fixed", bottom: 84, right: 24, zIndex: 150,
         background: "#f0fdf4", border: "1.5px solid #bbf7d0",
         borderRadius: 12, padding: "10px 14px", fontSize: 12,
-        display: "flex", alignItems: "center", gap: 10,
+        display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
+        maxWidth: "calc(100vw - 48px)",
         boxShadow: "0 2px 12px rgba(0,0,0,0.10)",
       }}>
         <div>
@@ -99,7 +100,7 @@ export function TastyConnect({ tasty, onConnect, onDisconnect }: TastyConnectPro
       {open && needsAck && (
         <div style={{
           marginBottom: 8, background: "#fff", border: "1.5px solid #fecaca",
-          borderRadius: 14, padding: 18, width: 300,
+          borderRadius: 14, padding: 18, width: "min(300px, calc(100vw - 48px))",
           boxShadow: "0 8px 32px rgba(0,0,0,0.14)",
         }}>
           <div style={{ fontWeight: 700, fontSize: 14, color: "#991b1b", marginBottom: 8 }}>
@@ -132,7 +133,7 @@ export function TastyConnect({ tasty, onConnect, onDisconnect }: TastyConnectPro
       {open && !needsAck && (
         <div style={{
           marginBottom: 8, background: "#fff", border: "1px solid #e2e8f0",
-          borderRadius: 14, padding: 18, width: 280,
+          borderRadius: 14, padding: 18, width: "min(280px, calc(100vw - 48px))",
           boxShadow: "0 8px 32px rgba(0,0,0,0.14)",
         }}>
           <div style={{ fontWeight: 700, fontSize: 14, color: "#0f172a", marginBottom: 4 }}>

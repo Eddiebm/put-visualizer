@@ -25,11 +25,13 @@ export function AiKeySettings({ aiKey, onSetKey }: AiKeySettingsProps) {
   }[status];
 
   return (
-    <div style={{ position: "fixed", bottom: 84, left: 24, zIndex: 150 }}>
+    // maxWidth caps the whole floating group — see JournalSync.tsx's
+    // identical comment; same fixed-width-badge risk on a phone screen.
+    <div style={{ position: "fixed", bottom: 84, left: 24, zIndex: 150, maxWidth: "calc(100vw - 48px)" }}>
       {open && (
         <div style={{
           marginBottom: 8, background: "#fff", border: "1px solid #e2e8f0",
-          borderRadius: 14, padding: 18, width: 280,
+          borderRadius: 14, padding: 18, width: "min(280px, calc(100vw - 48px))",
           boxShadow: "0 8px 32px rgba(0,0,0,0.14)",
         }}>
           <div style={{ fontWeight: 700, fontSize: 14, color: "#0f172a", marginBottom: 4 }}>AI access key</div>
@@ -63,15 +65,16 @@ export function AiKeySettings({ aiKey, onSetKey }: AiKeySettingsProps) {
           </div>
         </div>
       )}
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
         {badge && (
-          <div style={{ background: badge.bg, color: badge.color, border: `1px solid ${badge.color}30`, borderRadius: 10, padding: "8px 12px", fontSize: 11.5, fontWeight: 600, boxShadow: "0 2px 10px rgba(0,0,0,0.08)" }}>
+          <div className="pv-fab-badge" style={{ background: badge.bg, color: badge.color, border: `1px solid ${badge.color}30`, borderRadius: 10, padding: "8px 12px", fontSize: 11.5, fontWeight: 600, boxShadow: "0 2px 10px rgba(0,0,0,0.08)" }}>
             {badge.text}
           </div>
         )}
         <button
           type="button"
           onClick={() => setOpen((o) => !o)}
+          title="AI access key"
           style={{
             background: "#fff", color: "#475569", border: "1px solid #e2e8f0",
             borderRadius: 10, padding: "9px 12px", fontSize: 12,

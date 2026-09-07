@@ -79,8 +79,11 @@ export function AiAssistant({ context, aiKey }: AiAssistantProps) {
     <div style={{ position: "fixed", bottom: 24, right: 24, zIndex: 200, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 12 }}>
       {open && (
         <div style={{
-          width: 340,
-          maxHeight: 480,
+          // min() rather than a fixed size — a phone-width viewport is
+          // often narrower than 340px plus the 24px edge offset, which
+          // would otherwise clip the panel or force page-wide scroll.
+          width: "min(340px, calc(100vw - 48px))",
+          maxHeight: "min(480px, 70vh)",
           background: "#fff",
           borderRadius: 16,
           boxShadow: "0 8px 32px rgba(0,0,0,0.18)",

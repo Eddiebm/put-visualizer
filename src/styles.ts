@@ -6,6 +6,18 @@ export const keyframes = `
   input[type=number]::-webkit-outer-spin-button,
   input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
   input[type=number] { -moz-appearance: textfield; }
+
+  /* JournalSync (bottom-left) and AiKeySettings (bottom-left, stacked above
+     it) each render a status-text pill next to their icon toggle button.
+     Measured with Playwright: at common phone widths (320-375px) those
+     pills are wide enough to visually collide with the bottom-right
+     floating buttons (AiAssistant, Tastytrade connect). Below 480px, drop
+     the text and keep just the icon buttons — tapping one still opens the
+     full explanation in its popover, nothing is lost, just not shown
+     passively at a size where it would overlap something else. */
+  @media (max-width: 480px) {
+    .pv-fab-badge { display: none; }
+  }
 `;
 
 export const styles: Record<string, CSSProperties> = {
@@ -14,14 +26,22 @@ export const styles: Record<string, CSSProperties> = {
     background: "#f1f5f9",
     fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
     color: "#0f172a",
-    padding: "32px 16px",
+    // clamp() rather than a media query — inline styles can't be overridden
+    // by a stylesheet media query without !important, so responsive sizing
+    // has to live in the value itself. Shrinks toward phone-width viewports,
+    // caps out at the desktop value.
+    padding: "clamp(14px, 5vw, 32px) clamp(10px, 4vw, 16px)",
   },
-  shell: { maxWidth: 780, margin: "0 auto", background: "#fff", borderRadius: 18, boxShadow: "0 10px 40px rgba(15,23,42,0.08)", padding: 28 },
+  shell: { maxWidth: 780, margin: "0 auto", background: "#fff", borderRadius: 18, boxShadow: "0 10px 40px rgba(15,23,42,0.08)", padding: "clamp(16px, 5vw, 28px)" },
   header: { marginBottom: 20 },
   h1: { margin: "0 0 6px", fontSize: 25, letterSpacing: "-0.02em" },
   sub: { margin: 0, color: "#475569", fontSize: 14, lineHeight: 1.5, maxWidth: 600 },
-  toggle: { display: "flex", gap: 4, background: "#f1f5f9", borderRadius: 10, padding: 4, marginBottom: 18 },
-  toggleBtn: { flex: 1, border: "none", borderRadius: 8, padding: "9px 8px", fontSize: 13, cursor: "pointer", whiteSpace: "nowrap" },
+  // Four mode labels ("Cash-secured put", "Covered strangle", …) don't fit
+  // four-across on a phone-width screen without either clipping or wrapping
+  // mid-word. Scrolling horizontally (like the data tables elsewhere in
+  // this app) beats both — nothing is ever cut off or unreadable.
+  toggle: { display: "flex", gap: 4, background: "#f1f5f9", borderRadius: 10, padding: 4, marginBottom: 18, overflowX: "auto", WebkitOverflowScrolling: "touch" },
+  toggleBtn: { flex: "1 0 auto", minWidth: "max-content", border: "none", borderRadius: 8, padding: "9px 14px", fontSize: 13, cursor: "pointer", whiteSpace: "nowrap" },
   pickerWrap: { display: "flex", flexDirection: "column", gap: 14, marginBottom: 18, paddingBottom: 18, borderBottom: "1px solid #eef2f7" },
   pickerRow: { display: "flex", flexWrap: "wrap", alignItems: "flex-end", gap: 14 },
   premiumBtn: { border: "1px solid #d6deea", borderRadius: 10, background: "#f8fafc", color: "#1f2937", fontSize: 13, fontWeight: 600, padding: "10px 14px", cursor: "pointer", height: 40, whiteSpace: "nowrap" },
