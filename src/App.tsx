@@ -6,7 +6,7 @@ import { num, money } from "./lib/format";
 import { today, defaultExpiration } from "./lib/dates";
 import { roundStrike, round2, stratPnl, buildModel } from "./lib/pnl";
 import {
-  COMPANIES, STORAGE_KEY, JOURNAL_KEY, TOUR_KEY, JOURNAL_SYNC_KEY_STORAGE,
+  COMPANIES, STORAGE_KEY, JOURNAL_KEY, TOUR_KEY, JOURNAL_SYNC_KEY_STORAGE, AI_ACCESS_KEY_STORAGE,
   loadInputs, loadJournal,
 } from "./appConstants";
 import type { Defaults } from "./appConstants";
@@ -22,6 +22,7 @@ import { Stat } from "./components/shared";
 import { Tour, buildTourSteps } from "./components/Tour";
 import { TastyConnect, TastyOrderConfirm } from "./components/Tastytrade";
 import { JournalSync } from "./components/JournalSync";
+import { AiKeySettings } from "./components/AiKeySettings";
 import { AiAssistant } from "./components/AiAssistant";
 import { TodayView } from "./components/TodayView";
 import type { OpportunityPick } from "./components/TodayView";
@@ -106,6 +107,9 @@ export default function App() {
   const [tastyOrder, setTastyOrder] = useState<TastyOrderRequest | null>(null); // order pending confirmation
   const [syncKey, setSyncKey] = useState(() => {
     try { return localStorage.getItem(JOURNAL_SYNC_KEY_STORAGE) || ""; } catch { return ""; }
+  });
+  const [aiKey, setAiKey] = useState(() => {
+    try { return localStorage.getItem(AI_ACCESS_KEY_STORAGE) || ""; } catch { return ""; }
   });
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("idle");
   const [pulled, setPulled] = useState(false); // has the initial pull for the current syncKey resolved?
@@ -462,6 +466,7 @@ export default function App() {
             dropPct={dropPct}
             capital={capital}
             mode={mode}
+            aiKey={aiKey}
             onLoad={(sym, strike, prem) => {
               setTicker(sym);
               setInputs((s) => ({ ...s, strike, premium: prem, spot: strike }));
@@ -500,7 +505,7 @@ export default function App() {
           <DayReview journal={journal} scanStats={scanStats} capital={capital} />
         )}
 
-        {tab === "learn" && <LearnView capital={capital} />}
+        {tab === "learn" && <LearnView capital={capital} aiKey={aiKey} />}
 
         {tab === "calculator" && (<>
         <p style={styles.sub}>
@@ -713,7 +718,17 @@ export default function App() {
           Prices ~15-min delayed · for learning only, not live order entry · not financial advice · the red number is the part that matters
         </footer>
       </div>
-      <AiAssistant context={{ ...aiContext, capital }} />
+      <AiAssistant context={{ ...aiContext, capital }} aiKey={aiKey} />
+      <AiKeySettings
+        aiKey={aiKey}
+        onSetKey={(k) => {
+          setAiKey(k);
+          try {
+            if (k) localStorage.setItem(AI_ACCESS_KEY_STORAGE, k);
+            else localStorage.removeItem(AI_ACCESS_KEY_STORAGE);
+          } catch { /* ignore */ }
+        }}
+      />
       <JournalSync
         syncKey={syncKey}
         status={syncStatus}

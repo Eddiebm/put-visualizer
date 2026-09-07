@@ -1,5 +1,7 @@
 export const config = { runtime: "edge" };
 
+import { corsHeaders, rejectOrigin } from "./_cors";
+
 // Mirror of the curriculum topic list — must stay in sync with src/lib/curriculum.ts
 // (edge functions can't import from src/lib for runtime logic, but see history.ts /
 // tasty.ts for type-only cross-imports, which are fine since they erase at build time)
@@ -77,12 +79,22 @@ interface LessonBody {
 }
 
 export default async function handler(req: Request): Promise<Response> {
+  const ch = corsHeaders(req);
+  if (req.method !== "POST") return json({ error: "method_not_allowed" }, 405, ch);
+  const originRejection = rejectOrigin(req);
+  if (originRejection) return originRejection;
+
   const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error("ANTHROPIC_API_KEY not set");
+  if (!apiKey) return json({ available: false, reason: "no_key" }, 200, ch);
+
+  // See api/chat.ts — same proxy-abuse concern, same fix.
+  const accessKey = process.env.AI_ACCESS_KEY;
+  if (!accessKey) return json({ available: false, reason: "not_configured" }, 200, ch);
+  if (req.headers.get("x-ai-key") !== accessKey) return json({ error: "unauthorized" }, 401, ch);
 
   const { dayNumber, topicIndex }: LessonBody = await req.json();
   const entry = CURRICULUM[topicIndex ?? (dayNumber % CURRICULUM.length)];
-  if (!entry) return json({ error: "bad topic index" }, 400);
+  if (!entry) return json({ error: "bad topic index" }, 400, ch);
 
   const prompt = `You are teaching someone who has NEVER studied finance, investing, or economics in their life. They are intelligent but know absolutely zero financial terminology. Your job is to explain this topic so completely that NOTHING is left to their imagination — no assumption is made, no jargon is left unexplained.
 
@@ -129,7 +141,7 @@ The "jargon" array must contain an entry for EVERY term in this list: ${entry.te
 
   if (!r.ok) {
     const err = await r.text();
-    return json({ error: "Anthropic API error", detail: err }, 502);
+    return json({ error: "Anthropic API error", detail: err }, 502, ch);
   }
 
   const data = await r.json();
@@ -146,6 +158,7 @@ The "jargon" array must contain an entry for EVERY term in this list: ${entry.te
 
   return json({ ...parsed, topic: entry.topic, dayNumber }, 200, {
     "cache-control": "s-maxage=3600",
+    ...ch,
   });
 }
 

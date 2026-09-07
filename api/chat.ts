@@ -1,6 +1,6 @@
 export const config = { runtime: "edge" };
 
-import { corsHeaders } from "./_cors";
+import { corsHeaders, rejectOrigin } from "./_cors";
 
 const MAX_MESSAGES = 20;
 const MAX_MSG_CHARS = 2000;
@@ -40,10 +40,25 @@ export default async function handler(req: Request): Promise<Response> {
   if (req.method !== "POST") {
     return json({ error: "method_not_allowed" }, 405, ch);
   }
+  const originRejection = rejectOrigin(req);
+  if (originRejection) return originRejection;
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     return json({ available: false, reason: "no_key" }, 200, ch);
+  }
+
+  // This proxies every request to the Anthropic API on this app's own key —
+  // without a required, user-set access key, anyone who finds this URL can
+  // call it directly (no browser, no origin) and run up the bill. Until
+  // AI_ACCESS_KEY is configured, report unavailable rather than staying
+  // open by default.
+  const accessKey = process.env.AI_ACCESS_KEY;
+  if (!accessKey) {
+    return json({ available: false, reason: "not_configured" }, 200, ch);
+  }
+  if (req.headers.get("x-ai-key") !== accessKey) {
+    return json({ error: "unauthorized" }, 401, ch);
   }
 
   const { messages, context }: ChatBody = await req.json();

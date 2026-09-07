@@ -120,6 +120,32 @@ status badge shows whether the last sync succeeded, failed, or the backup isn't 
 at all. Losing the connection just falls back to the local copy, same as every other
 optional integration in this app.
 
+## Securing the AI features
+
+`api/chat.ts`, `api/analyze.ts`, and `api/lesson.ts` all proxy to the Anthropic API using
+this app's own `ANTHROPIC_API_KEY` — every request they serve is billed to whoever set
+that key up, not to the person asking. Without a required, user-set access key, anyone who
+finds the deployed URL can call these endpoints directly (no browser, no origin needed) and
+run up that bill. They're gated the same way the journal backup is above: one shared secret,
+checked server-side.
+
+**One-time setup:**
+
+1. Pick your own secret passphrase — same caveat as the journal key: don't reuse a real
+   password, this is a single shared secret standing between "just you" and "anyone with
+   the URL."
+2. Set it as a Vercel env var:
+   ```bash
+   printf '%s' 'YOUR_OWN_SECRET' | vercel env add AI_ACCESS_KEY production
+   ```
+3. Redeploy. In the app, click the 🔑 button (bottom-left, above the 🗄 journal-sync
+   button) and enter the same secret from step 1.
+
+Until `AI_ACCESS_KEY` is set on the server, the AI features report themselves as
+unavailable rather than staying open by default — same "fail closed" behavior as the
+journal backup when its own env vars are missing. A key mismatch between client and server
+surfaces as a plain-English message pointing back at the 🔑 settings, not a silent failure.
+
 ## A note on the tastytrade integration
 
 `api/tasty.ts` and the "Connect Tastytrade" button talk to tastytrade's **live production
@@ -158,8 +184,8 @@ tree is TypeScript now (`strict: true`) — see **Since then** below.
 ## Running the tests and linter
 
 ```bash
-npm test          # Vitest — 229 tests: every pure module in src/lib/, api/journal.ts,
-                  # and every component in src/components/ (React Testing Library)
+npm test          # Vitest — 254 tests: every pure module in src/lib/, every api/*.ts
+                  # Edge function, and every component in src/components/ (RTL)
 npm run typecheck # tsc --noEmit — the primary safety net now (strict: true)
 npm run lint      # ESLint — react-hooks rules (rules-of-hooks, exhaustive-deps)
 ```
@@ -273,6 +299,13 @@ aggregation, grouping closed trades by ISO week).
     TS/TSX via `@babel/eslint-parser` instead of `typescript-eslint`, which doesn't yet
     support the TypeScript version this project pins. `npm run typecheck` runs in CI
     alongside lint/test/build.
+11. Closed a real, currently-exploitable hole found during a post-merge security pass:
+    `api/chat.ts` and `api/analyze.ts` had CORS headers but never actually enforced them
+    (`rejectOrigin` was imported but unused), and `api/lesson.ts` had no origin or method
+    checks at all — meaning all three endpoints, which proxy to the Anthropic API on this
+    app's own key, were callable by anyone with the URL, at the app owner's expense, with
+    no browser required. Fixed with a shared-secret gate (`AI_ACCESS_KEY`) matching the
+    journal backup's existing pattern — see **Securing the AI features** above.
 
 **Still open:** backtesting whether Alex's scan's scoring weights (ported as-is from
 `stock-coach`) actually predict anything — they're currently unvalidated against

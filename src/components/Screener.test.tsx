@@ -10,7 +10,7 @@ beforeEach(() => {
 describe("Screener", () => {
   it("lets selecting up to 6 tickers and disables Compare until at least one is picked", async () => {
     const user = userEvent.setup();
-    render(<Screener expiration="2026-09-18" dropPct={20} capital={30000} mode="put" onLoad={() => {}} />);
+    render(<Screener expiration="2026-09-18" dropPct={20} capital={30000} mode="put" aiKey="test-ai-key" onLoad={() => {}} />);
     expect(screen.getByText("Compare stocks", { selector: "button" })).toBeDisabled();
     await user.click(screen.getByText("SPY"));
     expect(screen.getByText("Compare 1 stock", { selector: "button" })).not.toBeDisabled();
@@ -18,7 +18,7 @@ describe("Screener", () => {
 
   it("falls back to snapshot prices when the API is unavailable, and shows the no-live-premiums warning", async () => {
     const user = userEvent.setup();
-    render(<Screener expiration="2026-09-18" dropPct={20} capital={30000} mode="put" onLoad={() => {}} />);
+    render(<Screener expiration="2026-09-18" dropPct={20} capital={30000} mode="put" aiKey="test-ai-key" onLoad={() => {}} />);
     await user.click(screen.getByText("SPY"));
     await user.click(screen.getByText("Compare 1 stock"));
     await waitFor(() => expect(screen.getByText(/No live premiums/)).toBeInTheDocument());
@@ -34,7 +34,7 @@ describe("Screener", () => {
     });
     const onLoad = vi.fn();
     const user = userEvent.setup();
-    render(<Screener expiration="2026-09-18" dropPct={20} capital={30000} mode="put" onLoad={onLoad} />);
+    render(<Screener expiration="2026-09-18" dropPct={20} capital={30000} mode="put" aiKey="test-ai-key" onLoad={onLoad} />);
     await user.click(screen.getByText("SPY"));
     await user.click(screen.getByText("Compare 1 stock"));
     await waitFor(() => expect(screen.getAllByText("Load ↑").length).toBeGreaterThan(0));
@@ -44,7 +44,7 @@ describe("Screener", () => {
 
   it("clears the selection when Clear is clicked", async () => {
     const user = userEvent.setup();
-    render(<Screener expiration="2026-09-18" dropPct={20} capital={30000} mode="put" onLoad={() => {}} />);
+    render(<Screener expiration="2026-09-18" dropPct={20} capital={30000} mode="put" aiKey="test-ai-key" onLoad={() => {}} />);
     await user.click(screen.getByText("SPY"));
     await user.click(screen.getByText("Clear"));
     expect(screen.getByText("Compare stocks", { selector: "button" })).toBeDisabled();

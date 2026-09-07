@@ -1,6 +1,6 @@
 export const config = { runtime: "edge" };
 
-import { corsHeaders } from "./_cors";
+import { corsHeaders, rejectOrigin } from "./_cors";
 
 const MAX_STOCKS = 25;
 
@@ -24,9 +24,16 @@ interface AnalyzeBody {
 export default async function handler(req: Request): Promise<Response> {
   const ch = corsHeaders(req);
   if (req.method !== "POST") return json({ error: "method_not_allowed" }, 405, ch);
+  const originRejection = rejectOrigin(req);
+  if (originRejection) return originRejection;
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return json({ available: false, reason: "no_key" }, 200, ch);
+
+  // See api/chat.ts — same proxy-abuse concern, same fix.
+  const accessKey = process.env.AI_ACCESS_KEY;
+  if (!accessKey) return json({ available: false, reason: "not_configured" }, 200, ch);
+  if (req.headers.get("x-ai-key") !== accessKey) return json({ error: "unauthorized" }, 401, ch);
 
   let body: AnalyzeBody;
   try { body = await req.json(); } catch { return json({ error: "invalid_json" }, 400, ch); }

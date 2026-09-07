@@ -15,6 +15,7 @@ interface AiContext {
 
 interface AiAssistantProps {
   context: AiContext;
+  aiKey: string;
 }
 
 interface ChatMessage {
@@ -29,7 +30,7 @@ interface ChatResponse {
   reply?: string;
 }
 
-export function AiAssistant({ context }: AiAssistantProps) {
+export function AiAssistant({ context, aiKey }: AiAssistantProps) {
   const [open, setOpen] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([{
     role: "assistant",
@@ -54,12 +55,17 @@ export function AiAssistant({ context }: AiAssistantProps) {
     try {
       const r = await fetch("/api/chat", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "x-ai-key": aiKey },
         body: JSON.stringify({ messages: next, context }),
       });
+      if (r.status === 401) {
+        setMessages(m => [...m, { role: "assistant", content: "That access key doesn't match what's set on the server. Fix it in the 🔑 AI access key settings (bottom-left)." }]);
+        setBusy(false);
+        return;
+      }
       const d: ChatResponse = await r.json();
       if (!d.available && d.available !== undefined) {
-        setMessages(m => [...m, { role: "assistant", content: "The AI coach isn't set up yet. Ask me after you add an ANTHROPIC_API_KEY to your environment." }]);
+        setMessages(m => [...m, { role: "assistant", content: "The AI coach isn't set up yet. Ask me after you add ANTHROPIC_API_KEY and AI_ACCESS_KEY to your environment, and enter the access key in 🔑 (bottom-left)." }]);
       } else {
         setMessages(m => [...m, { role: "assistant", content: d.reply ?? "Sorry, something went wrong." }]);
       }

@@ -6,6 +6,7 @@ import type { CurriculumDay } from "../lib/curriculum";
 
 interface LearnViewProps {
   capital: number;
+  aiKey: string;
 }
 
 interface GlossaryTerm {
@@ -26,7 +27,7 @@ interface Lesson {
   dayNumber?: number;
 }
 
-export function LearnView({ capital }: LearnViewProps) {
+export function LearnView({ capital, aiKey }: LearnViewProps) {
   const [dayNumber, setDayNumber]   = React.useState(() => {
     return parseInt(localStorage.getItem("pv_lesson_day") ?? "0", 10);
   });
@@ -49,10 +50,13 @@ export function LearnView({ capital }: LearnViewProps) {
     setError(null);
     fetch("/api/lesson", {
       method:  "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", "x-ai-key": aiKey },
       body:    JSON.stringify({ dayNumber, topicIndex: dayNumber % CURRICULUM.length }),
     })
-      .then(r => r.json())
+      .then(r => {
+        if (r.status === 401) throw new Error("unauthorized");
+        return r.json();
+      })
       .then((d: Lesson) => {
         setLesson(d);
         sessionStorage.setItem(cacheKey, JSON.stringify(d));
@@ -67,7 +71,11 @@ export function LearnView({ capital }: LearnViewProps) {
           });
         }
       })
-      .catch(() => setError("Could not load today's lesson. Check that ANTHROPIC_API_KEY is set."))
+      .catch((e) => setError(
+        e?.message === "unauthorized"
+          ? "That access key doesn't match what's set on the server — fix it in the 🔑 AI access key settings."
+          : "Could not load today's lesson. Check that ANTHROPIC_API_KEY and AI_ACCESS_KEY are set."
+      ))
       .finally(() => setLoading(false));
   }, [dayNumber]);
 
@@ -86,12 +94,19 @@ export function LearnView({ capital }: LearnViewProps) {
     setLoading(true);
     fetch("/api/lesson", {
       method:  "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", "x-ai-key": aiKey },
       body:    JSON.stringify({ dayNumber, topicIndex: dayNumber % CURRICULUM.length }),
     })
-      .then(r => r.json())
+      .then(r => {
+        if (r.status === 401) throw new Error("unauthorized");
+        return r.json();
+      })
       .then((d: Lesson) => { setLesson(d); sessionStorage.setItem(cacheKey, JSON.stringify(d)); })
-      .catch(() => setError("Could not regenerate lesson."))
+      .catch((e) => setError(
+        e?.message === "unauthorized"
+          ? "That access key doesn't match what's set on the server — fix it in the 🔑 AI access key settings."
+          : "Could not regenerate lesson."
+      ))
       .finally(() => setLoading(false));
   }
 

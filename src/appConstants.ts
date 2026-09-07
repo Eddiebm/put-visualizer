@@ -20,6 +20,14 @@ export const TASTY_LIVE_ACK_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 // here, everything works exactly as before — localStorage only.
 export const JOURNAL_SYNC_KEY_STORAGE = "journal_sync_key";
 
+// Gates the three AI endpoints (chat, analyze, lesson) — all three proxy to
+// the Anthropic API using a server-side key, and without this they're
+// callable by anyone who finds the URL, at this app owner's expense. The
+// key entered here must match AI_ACCESS_KEY on the server; until both are
+// set, the AI features report unavailable rather than silently staying
+// open (see the "not_configured" handling in each api/*.js file).
+export const AI_ACCESS_KEY_STORAGE = "ai_access_key";
+
 // Bundled snapshot prices — used instantly on selection and as the offline
 // fallback when the live /api/quote endpoint is unreachable. Editable; the UI
 // labels these clearly as approximate so they're never mistaken for live data.

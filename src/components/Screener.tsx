@@ -56,10 +56,11 @@ interface ScreenerProps {
   dropPct: number;
   capital: number;
   mode: Mode;
+  aiKey: string;
   onLoad: (sym: string, strike: number, premium: number) => void;
 }
 
-export function Screener({ expiration, dropPct, capital, mode, onLoad }: ScreenerProps) {
+export function Screener({ expiration, dropPct, capital, mode, aiKey, onLoad }: ScreenerProps) {
   const [selected, setSelected] = useState<string[]>([]);
   const [exp, setExp] = useState(expiration);
   const [rows, setRows] = useState<RowData[]>([]);
@@ -135,9 +136,10 @@ export function Screener({ expiration, dropPct, capital, mode, onLoad }: Screene
     try {
       const r = await fetch("/api/analyze", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "x-ai-key": aiKey },
         body: JSON.stringify({ stocks: stocksToAnalyze, capital, mode }),
       });
+      if (r.status === 401) { setAiStatus("unavailable"); return; }
       const d: AiAnalysisResponse = await r.json();
       if (!d.available) { setAiStatus("unavailable"); return; }
       const map: Record<string, AiVerdict> = {};

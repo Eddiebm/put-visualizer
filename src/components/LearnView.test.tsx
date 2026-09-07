@@ -12,14 +12,14 @@ describe("LearnView", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
       json: () => Promise.resolve({ what: "An option is a contract." }),
     }));
-    render(<LearnView capital={5000} />);
+    render(<LearnView capital={5000} aiKey="test-ai-key" />);
     expect(screen.getByText(/Preparing your lesson/)).toBeInTheDocument();
     await waitFor(() => expect(screen.getByText("An option is a contract.")).toBeInTheDocument());
   });
 
   it("shows an error message when the lesson fetch fails", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
-    render(<LearnView capital={5000} />);
+    render(<LearnView capital={5000} aiKey="test-ai-key" />);
     await waitFor(() => expect(screen.getByText(/Could not load today's lesson/)).toBeInTheDocument());
   });
 
@@ -27,7 +27,7 @@ describe("LearnView", () => {
     sessionStorage.setItem("pv_lesson_0", JSON.stringify({ what: "Cached lesson content." }));
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
-    render(<LearnView capital={5000} />);
+    render(<LearnView capital={5000} aiKey="test-ai-key" />);
     await waitFor(() => expect(screen.getByText("Cached lesson content.")).toBeInTheDocument());
     expect(fetchMock).not.toHaveBeenCalled();
   });
