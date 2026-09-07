@@ -1,6 +1,6 @@
 export const config = { runtime: "edge" };
 
-import { corsHeaders } from "./_cors";
+import { corsHeaders, rejectOrigin } from "./_cors";
 import type { Bar } from "../src/types";
 
 // Fetches daily bars for realized-vol computation (default ~35 trading days)
@@ -8,6 +8,9 @@ import type { Bar } from "../src/types";
 // Cached for 1 hour — this data doesn't need to be fresh.
 export default async function handler(req: Request): Promise<Response> {
   const ch = corsHeaders(req);
+  const originRejection = rejectOrigin(req);
+  if (originRejection) return originRejection;
+
   const { searchParams } = new URL(req.url);
   const symbol = (searchParams.get("symbol") || "").toUpperCase().replace(/[^A-Z.\-]/g, "");
   const days = Math.min(400, Math.max(10, parseInt(searchParams.get("days") || "40", 10) || 40));

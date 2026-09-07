@@ -1,6 +1,6 @@
 export const config = { runtime: "edge" };
 
-import { corsHeaders } from "./_cors";
+import { corsHeaders, rejectOrigin } from "./_cors";
 
 // Real put-option premium from Alpaca's options market data (indicative feed,
 // ~15-min delayed on the free tier). Given an underlying, an expiration date,
@@ -11,6 +11,9 @@ import { corsHeaders } from "./_cors";
 // can keep the premium as a manual input instead of surfacing an error.
 export default async function handler(req: Request): Promise<Response> {
   const ch = corsHeaders(req);
+  const originRejection = rejectOrigin(req);
+  if (originRejection) return originRejection;
+
   const { searchParams } = new URL(req.url);
   const symbol = (searchParams.get("symbol") || "").toUpperCase().replace(/[^A-Z.\-]/g, "");
   const expiration = (searchParams.get("expiration") || "").replace(/[^0-9\-]/g, "");

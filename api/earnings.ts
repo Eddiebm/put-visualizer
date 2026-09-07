@@ -1,5 +1,7 @@
 export const config = { runtime: "edge" };
 
+import { corsHeaders, rejectOrigin } from "./_cors";
+
 interface EarningsEvent {
   symbol: string;
   date: string;
@@ -10,14 +12,18 @@ interface EarningsEvent {
 // One call per scan regardless of how many stocks we check — avoids rate limits.
 // Single-symbol mode kept for direct lookups.
 export default async function handler(req: Request): Promise<Response> {
+  const ch = corsHeaders(req);
+  const originRejection = rejectOrigin(req);
+  if (originRejection) return originRejection;
+
   const { searchParams } = new URL(req.url);
   const symbol = (searchParams.get("symbol") || "").toUpperCase().replace(/[^A-Z.\-]/g, "");
   const expiration = (searchParams.get("expiration") || "").replace(/[^0-9\-]/g, "");
 
   const token = process.env.FINNHUB_API_KEY;
-  if (!token) return json({ available: false, reason: "no_key" });
+  if (!token) return json({ available: false, reason: "no_key" }, 200, ch);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(expiration)) {
-    return json({ error: "expiration (YYYY-MM-DD) required" }, 400);
+    return json({ error: "expiration (YYYY-MM-DD) required" }, 400, ch);
   }
 
   const today = new Date().toISOString().slice(0, 10);
@@ -30,7 +36,7 @@ export default async function handler(req: Request): Promise<Response> {
       : `https://finnhub.io/api/v1/calendar/earnings?from=${today}&to=${expiration}&token=${token}`;
 
     const r = await fetch(url);
-    if (!r.ok) return json({ available: false, status: r.status });
+    if (!r.ok) return json({ available: false, status: r.status }, 200, ch);
 
     const data = await r.json();
     const events: EarningsEvent[] = data?.earningsCalendar ?? [];
@@ -40,7 +46,7 @@ export default async function handler(req: Request): Promise<Response> {
       return json(
         { available: true, hasEarnings: !!hit, date: hit?.date ?? null, hour: hit?.hour ?? null },
         200,
-        { "cache-control": "s-maxage=3600, stale-while-revalidate=7200" }
+        { "cache-control": "s-maxage=3600, stale-while-revalidate=7200", ...ch }
       );
     }
 
@@ -56,10 +62,10 @@ export default async function handler(req: Request): Promise<Response> {
     return json(
       { available: true, earningsMap },
       200,
-      { "cache-control": "s-maxage=3600, stale-while-revalidate=7200" }
+      { "cache-control": "s-maxage=3600, stale-while-revalidate=7200", ...ch }
     );
   } catch {
-    return json({ available: false });
+    return json({ available: false }, 200, ch);
   }
 }
 

@@ -1,6 +1,6 @@
 export const config = { runtime: "edge" };
 
-import { corsHeaders } from "./_cors";
+import { corsHeaders, rejectOrigin } from "./_cors";
 
 interface QuoteResult {
   symbol: string;
@@ -15,6 +15,9 @@ interface QuoteResult {
 // reachable (e.g. local `npm run dev`, which doesn't run this function).
 export default async function handler(req: Request): Promise<Response> {
   const ch = corsHeaders(req);
+  const originRejection = rejectOrigin(req);
+  if (originRejection) return originRejection;
+
   const { searchParams } = new URL(req.url);
   const symbol = (searchParams.get("symbol") || "")
     .toUpperCase()

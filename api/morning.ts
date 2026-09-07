@@ -1,6 +1,6 @@
 export const config = { runtime: "edge" };
 
-import { corsHeaders } from "./_cors";
+import { corsHeaders, rejectOrigin } from "./_cors";
 
 // ─── Symbol map — one Yahoo Finance batch call covers everything ──────────────
 interface YfEntry {
@@ -113,7 +113,10 @@ interface SpyGap {
 }
 
 export default async function handler(req: Request): Promise<Response> {
-  const ch      = corsHeaders(req);
+  const ch = corsHeaders(req);
+  const originRejection = rejectOrigin(req);
+  if (originRejection) return originRejection;
+
   const today   = new Date().toISOString().slice(0, 10);
   const weekOut = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
 

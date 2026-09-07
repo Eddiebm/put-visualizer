@@ -146,6 +146,36 @@ unavailable rather than staying open by default — same "fail closed" behavior 
 journal backup when its own env vars are missing. A key mismatch between client and server
 surfaces as a plain-English message pointing back at the 🔑 settings, not a silent failure.
 
+## Locking down which origins can call the API
+
+Every `api/*.ts` endpoint now checks the request's `Origin` header (`rejectOrigin()` in
+`api/_cors.ts`) and rejects anything that isn't this app itself or localhost dev, so someone
+can't script requests against your deployment from an unrelated page in a browser. By
+default that allowlist is a regex — `put-visualizer(-[a-z0-9]+)?.vercel.app` — meant to
+match Vercel's own preview-deployment subdomains for *this* project. It has a real gap: a
+different Vercel account can deploy their own project literally named e.g.
+`put-visualizer-anything` and get a domain that also matches the regex, since `*.vercel.app`
+subdomains aren't scoped per-project the way a custom domain is.
+
+None of this app's endpoints rely on cookies, so this isn't a classic CSRF hole — the risk
+is narrower: an attacker's own page on a matching domain could ask a victim's browser to
+call your API using whatever access key that victim's browser already has (e.g. in
+`localStorage`), the same way any cross-origin page could if you'd allowed it explicitly.
+Recommended for any real deployment:
+
+```bash
+printf '%s' 'https://your-actual-domain.vercel.app' | vercel env add ALLOWED_ORIGIN production
+```
+
+Once set, `ALLOWED_ORIGIN` replaces the regex entirely with an exact match — see
+`isAllowed()` in `api/_cors.ts`.
+
+Note this only gates *browser* requests carrying an `Origin` header — a request made with no
+`Origin` at all (plain `curl`, a server-side script) always passes this check, same as a
+same-origin browser request would. It's not a substitute for the shared-secret keys above on
+endpoints that actually cost money to call; it's what stops a malicious *webpage* from using
+someone else's browser session against your API.
+
 ## A note on the tastytrade integration
 
 `api/tasty.ts` and the "Connect Tastytrade" button talk to tastytrade's **live production
@@ -184,7 +214,7 @@ tree is TypeScript now (`strict: true`) — see **Since then** below.
 ## Running the tests and linter
 
 ```bash
-npm test          # Vitest — 259 tests: every pure module in src/lib/, every api/*.ts
+npm test          # Vitest — 269 tests: every pure module in src/lib/, every api/*.ts
                   # Edge function, and every component in src/components/ (RTL)
 npm run typecheck # tsc --noEmit — the primary safety net now (strict: true)
 npm run lint      # ESLint — react-hooks rules (rules-of-hooks, exhaustive-deps)
@@ -325,6 +355,15 @@ aggregation, grouping closed trades by ISO week).
     off-screen, and collapsing the two bottom-left status pills to icon-only below 480px
     so they can't collide with the bottom-right buttons — tapping the icon still opens the
     full explanation. `page`/`shell` padding now uses `clamp()` instead of a fixed value.
+14. Closed the same origin-check gap on the five market-data endpoints (`quote.ts`,
+    `option.ts`, `history.ts`, `earnings.ts`, `morning.ts`) that items 11 and 12 closed on
+    the AI endpoints: all five called `corsHeaders()` (or, for `earnings.ts`, nothing at
+    all) without ever calling `rejectOrigin()`, so anyone with the URL could call them
+    directly and consume the app owner's Alpaca/Finnhub quota. These don't carry a
+    per-request cost the way the AI endpoints do, so they're origin-gated only (see
+    **Locking down which origins can call the API** above) rather than given their own
+    access key — that would be security theater for public market data with no real
+    per-call cost to protect.
 
 **Still open:** backtesting whether Alex's scan's scoring weights (ported as-is from
 `stock-coach`) actually predict anything — they're currently unvalidated against
