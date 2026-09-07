@@ -20,8 +20,12 @@ describe("WeeklyReport", () => {
 
   it("shows this week's realized P&L, wins, and losses without netting", () => {
     const journal: JournalEntry[] = [
+      // Both dated "today" rather than "today" + "yesterday": yesterday can
+      // fall in the *previous* ISO week whenever today is a Monday, which
+      // would flakily split these two entries across two different weekly
+      // buckets. Same-day keeps both deterministically in "this week".
       { id: "1", status: "closed", mode: "put", ...base, putStrike: 50, contracts: 1, collateral: 5000, closedAt: isoDaysAgo(0), realizedPnl: 300 },
-      { id: "2", status: "closed", mode: "put", ...base, putStrike: 50, contracts: 1, collateral: 5000, closedAt: isoDaysAgo(1), realizedPnl: -150 },
+      { id: "2", status: "closed", mode: "put", ...base, putStrike: 50, contracts: 1, collateral: 5000, closedAt: isoDaysAgo(0), realizedPnl: -150 },
     ];
     render(<WeeklyReport journal={journal} />);
     expect(screen.getByText(/This week/)).toBeInTheDocument();
