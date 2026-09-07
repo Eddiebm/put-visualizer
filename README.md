@@ -184,7 +184,7 @@ tree is TypeScript now (`strict: true`) — see **Since then** below.
 ## Running the tests and linter
 
 ```bash
-npm test          # Vitest — 254 tests: every pure module in src/lib/, every api/*.ts
+npm test          # Vitest — 259 tests: every pure module in src/lib/, every api/*.ts
                   # Edge function, and every component in src/components/ (RTL)
 npm run typecheck # tsc --noEmit — the primary safety net now (strict: true)
 npm run lint      # ESLint — react-hooks rules (rules-of-hooks, exhaustive-deps)
@@ -306,6 +306,13 @@ aggregation, grouping closed trades by ISO week).
     app's own key, were callable by anyone with the URL, at the app owner's expense, with
     no browser required. Fixed with a shared-secret gate (`AI_ACCESS_KEY`) matching the
     journal backup's existing pattern — see **Securing the AI features** above.
+12. Switched every shared-secret check (`JOURNAL_ACCESS_KEY`, `AI_ACCESS_KEY`) from `!==`
+    to a constant-time comparison (`api/_auth.ts`). A plain `!==` on two strings
+    short-circuits at the first mismatched byte, so how long a wrong guess takes leaks how
+    many leading characters it got right — a real timing side channel given these
+    endpoints have no rate limiting in front of them. The new helper hashes both sides
+    first (SHA-256, always 32 bytes) so the comparison always does the same amount of work
+    regardless of the secrets' length or content.
 
 **Still open:** backtesting whether Alex's scan's scoring weights (ported as-is from
 `stock-coach`) actually predict anything — they're currently unvalidated against

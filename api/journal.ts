@@ -1,6 +1,7 @@
 export const config = { runtime: "edge" };
 
 import { corsHeaders, rejectOrigin } from "./_cors";
+import { timingSafeEqual } from "./_auth";
 
 // Server-side backup for the trade journal. Without this, the journal
 // (the only record of real trades) lives ONLY in one browser's localStorage
@@ -10,10 +11,11 @@ import { corsHeaders, rejectOrigin } from "./_cors";
 // before, same pattern as the other optional integrations in this app.
 //
 // Auth: a single shared secret (JOURNAL_ACCESS_KEY), sent as the
-// `x-journal-key` header. This is a personal single-user app with no
-// account system — a shared secret is the lightweight equivalent of a
-// PIN, not a substitute for real auth. Don't reuse this pattern for
-// anything multi-user.
+// `x-journal-key` header and compared with timingSafeEqual (api/_auth.ts)
+// rather than `!==`, since there's no rate limiting in front of this
+// endpoint. This is a personal single-user app with no account system — a
+// shared secret is the lightweight equivalent of a PIN, not a substitute
+// for real auth. Don't reuse this pattern for anything multi-user.
 //
 // Storage model: full-replace sync, not incremental diffing. The client
 // already holds the whole journal array as one piece of React state, so on
@@ -47,8 +49,8 @@ export default async function handler(req: Request): Promise<Response> {
     return json({ available: false, reason: "not_configured" }, 200, ch);
   }
 
-  const providedKey = req.headers.get("x-journal-key");
-  if (providedKey !== accessKey) {
+  const providedKey = req.headers.get("x-journal-key") ?? "";
+  if (!(await timingSafeEqual(providedKey, accessKey))) {
     return json({ error: "unauthorized" }, 401, ch);
   }
 

@@ -1,6 +1,7 @@
 export const config = { runtime: "edge" };
 
 import { corsHeaders, rejectOrigin } from "./_cors";
+import { timingSafeEqual } from "./_auth";
 
 const MAX_MESSAGES = 20;
 const MAX_MSG_CHARS = 2000;
@@ -57,7 +58,7 @@ export default async function handler(req: Request): Promise<Response> {
   if (!accessKey) {
     return json({ available: false, reason: "not_configured" }, 200, ch);
   }
-  if (req.headers.get("x-ai-key") !== accessKey) {
+  if (!(await timingSafeEqual(req.headers.get("x-ai-key") ?? "", accessKey))) {
     return json({ error: "unauthorized" }, 401, ch);
   }
 

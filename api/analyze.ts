@@ -1,6 +1,7 @@
 export const config = { runtime: "edge" };
 
 import { corsHeaders, rejectOrigin } from "./_cors";
+import { timingSafeEqual } from "./_auth";
 
 const MAX_STOCKS = 25;
 
@@ -33,7 +34,7 @@ export default async function handler(req: Request): Promise<Response> {
   // See api/chat.ts — same proxy-abuse concern, same fix.
   const accessKey = process.env.AI_ACCESS_KEY;
   if (!accessKey) return json({ available: false, reason: "not_configured" }, 200, ch);
-  if (req.headers.get("x-ai-key") !== accessKey) return json({ error: "unauthorized" }, 401, ch);
+  if (!(await timingSafeEqual(req.headers.get("x-ai-key") ?? "", accessKey))) return json({ error: "unauthorized" }, 401, ch);
 
   let body: AnalyzeBody;
   try { body = await req.json(); } catch { return json({ error: "invalid_json" }, 400, ch); }

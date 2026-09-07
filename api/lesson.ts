@@ -1,6 +1,7 @@
 export const config = { runtime: "edge" };
 
 import { corsHeaders, rejectOrigin } from "./_cors";
+import { timingSafeEqual } from "./_auth";
 
 // Mirror of the curriculum topic list — must stay in sync with src/lib/curriculum.ts
 // (edge functions can't import from src/lib for runtime logic, but see history.ts /
@@ -90,7 +91,7 @@ export default async function handler(req: Request): Promise<Response> {
   // See api/chat.ts — same proxy-abuse concern, same fix.
   const accessKey = process.env.AI_ACCESS_KEY;
   if (!accessKey) return json({ available: false, reason: "not_configured" }, 200, ch);
-  if (req.headers.get("x-ai-key") !== accessKey) return json({ error: "unauthorized" }, 401, ch);
+  if (!(await timingSafeEqual(req.headers.get("x-ai-key") ?? "", accessKey))) return json({ error: "unauthorized" }, 401, ch);
 
   const { dayNumber, topicIndex }: LessonBody = await req.json();
   const entry = CURRICULUM[topicIndex ?? (dayNumber % CURRICULUM.length)];
