@@ -99,6 +99,24 @@ describe("Holdings — live data and verdicts", () => {
     await addHolding();
     await waitFor(() => expect(screen.getByText("Price unavailable")).toBeInTheDocument());
   });
+
+  it("reveals the sophisticated numeric detail behind a verdict only after clicking Explain", async () => {
+    const bars = Array.from({ length: 60 }, () => ({ h: 100, l: 100, c: 100 }));
+    mockQuoteAndHistory(100, bars);
+    const user = await addHolding("10", "100");
+    await waitFor(() => expect(screen.getByText(/Now \$100\.00/)).toBeInTheDocument());
+
+    // The plain-English reason is visible by default; the numeric detail
+    // behind "Your rule" is not, until "Explain" is clicked.
+    expect(screen.queryByText(/Stop-loss triggers at or below/)).not.toBeInTheDocument();
+    const explainButtons = screen.getAllByText("Explain");
+    await user.click(explainButtons[0]); // "Your rule" row is first
+    expect(screen.getByText(/Stop-loss triggers at or below \$90\.00/)).toBeInTheDocument();
+
+    // Toggles back off via the same button, now labeled "Less".
+    await user.click(screen.getByText("Less"));
+    expect(screen.queryByText(/Stop-loss triggers at or below/)).not.toBeInTheDocument();
+  });
 });
 
 describe("Holdings — checking a ticker before buying", () => {
@@ -123,6 +141,11 @@ describe("Holdings — checking a ticker before buying", () => {
     await user.click(screen.getByText("Check"));
     await waitFor(() => expect(screen.getByText("AVOID")).toBeInTheDocument());
     expect(screen.getByText(/50-day/)).toBeInTheDocument();
+
+    // Same Explain/detail pattern as the sell-side verdicts.
+    expect(screen.queryByText(/SMA50 \$/)).not.toBeInTheDocument();
+    await user.click(screen.getByText("Explain"));
+    expect(screen.getByText(/SMA50 \$/)).toBeInTheDocument();
   });
 
   it("prefills the add-holding form's ticker and cost basis when 'Add as a holding' is clicked", async () => {

@@ -57,6 +57,14 @@ describe("ruleVerdict", () => {
     expect(ruleVerdict(HOLDING, 85).verdict).toBe("sell");
   });
 
+  it("states the exact stop-loss and take-profit trigger prices in detail", () => {
+    // 10% below $100 cost basis = $90.00; 20% above = $120.00.
+    const v = ruleVerdict(HOLDING, 85);
+    expect(v.detail).toContain("$90.00");
+    expect(v.detail).toContain("$120.00");
+    expect(v.detail).toContain("$85.00"); // the live price itself, echoed back
+  });
+
   it("sells at or past the take-profit threshold", () => {
     // +20% of 100 cost basis = 120
     expect(ruleVerdict(HOLDING, 120).verdict).toBe("sell");
@@ -79,7 +87,13 @@ describe("technicalVerdict", () => {
   it("sells when price is below both the 50- and 200-day averages (real downtrend)", () => {
     // 220 bars falling from 150 to 80 — price ends well below both SMAs.
     const bars = trendBars(220, 150, 80);
-    expect(technicalVerdict(bars).verdict).toBe("sell");
+    const v = technicalVerdict(bars);
+    expect(v.verdict).toBe("sell");
+    // The detail must actually name the real SMA50/SMA200 values, not just
+    // restate the verdict — this is what "explainable" is supposed to mean.
+    expect(v.detail).toMatch(/Price \$80\.00/);
+    expect(v.detail).toMatch(/SMA50 \$\d+\.\d{2} — price is below it/);
+    expect(v.detail).toMatch(/SMA200 \$\d+\.\d{2} — price is below it/);
   });
 
   it("watches when only the 50-day average has broken (200-day not available yet)", () => {
@@ -167,6 +181,10 @@ describe("entryVerdict", () => {
     const bars = risingThenTightZigzag(200, 20, 50, 150, 1);
     const v = entryVerdict(bars);
     expect(v.verdict).toBe("buy");
+    // The detail must name the actual SMA20 and RSI reads that made this a
+    // "buy" rather than just asserting it.
+    expect(v.detail).toMatch(/SMA20 \$\d+\.\d{2} — price is above it \(\d+\.\d%? ?above\)/);
+    expect(v.detail).toMatch(/RSI\(14\) \d+\.\d — neutral/);
   });
 
   it("waits (not the tightest entry) on a confirmed uptrend that's moderately extended", () => {
@@ -181,9 +199,9 @@ describe("entryVerdict", () => {
 });
 
 describe("consensusVerdict", () => {
-  const sell: import("./holdings").RuleVerdict = { verdict: "sell", reason: "s" };
-  const watch: import("./holdings").RuleVerdict = { verdict: "watch", reason: "w" };
-  const hold: import("./holdings").RuleVerdict = { verdict: "hold", reason: "h" };
+  const sell: import("./holdings").RuleVerdict = { verdict: "sell", reason: "s", detail: "d" };
+  const watch: import("./holdings").RuleVerdict = { verdict: "watch", reason: "w", detail: "d" };
+  const hold: import("./holdings").RuleVerdict = { verdict: "hold", reason: "h", detail: "d" };
 
   it("sells only when both signals sell", () => {
     expect(consensusVerdict(sell, sell).verdict).toBe("sell");

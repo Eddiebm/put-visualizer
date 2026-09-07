@@ -79,6 +79,7 @@ function TickerCheck({ onAdd }: { onAdd: (ticker: string, price: number) => void
   const [ticker, setTicker] = useState("");
   const [checking, setChecking] = useState(false);
   const [result, setResult] = useState<CheckResult | null>(null);
+  const [explainOpen, setExplainOpen] = useState(false);
 
   async function check(e: React.FormEvent) {
     e.preventDefault();
@@ -86,6 +87,7 @@ function TickerCheck({ onAdd }: { onAdd: (ticker: string, price: number) => void
     if (!t) return;
     setChecking(true);
     setResult(null);
+    setExplainOpen(false);
     const [quoteData, histData] = await Promise.all([
       fetch(`/api/quote?symbol=${encodeURIComponent(t)}`).then((r) => (r.ok ? r.json() : null)).catch(() => null),
       fetch(`/api/history?symbol=${encodeURIComponent(t)}&days=220`).then((r) => (r.ok ? r.json() : null)).catch(() => null),
@@ -118,26 +120,37 @@ function TickerCheck({ onAdd }: { onAdd: (ticker: string, price: number) => void
       </form>
 
       {result && (
-        <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid #eef2f7", display: "flex", gap: 10, alignItems: "flex-start", flexWrap: "wrap" }}>
-          <div style={{ minWidth: 90 }}>
-            <div style={{ fontWeight: 700, fontSize: 13, color: "#0f172a" }}>{result.ticker}</div>
-            <div style={{ fontSize: 11.5, color: "#94a3b8" }}>{result.price != null ? money2(result.price) : "price unavailable"}</div>
+        <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid #eef2f7" }}>
+          <div style={{ display: "flex", gap: 10, alignItems: "flex-start", flexWrap: "wrap" }}>
+            <div style={{ minWidth: 90 }}>
+              <div style={{ fontWeight: 700, fontSize: 13, color: "#0f172a" }}>{result.ticker}</div>
+              <div style={{ fontSize: 11.5, color: "#94a3b8" }}>{result.price != null ? money2(result.price) : "price unavailable"}</div>
+            </div>
+            <EntryBadge verdict={result.entry.verdict} />
+            <div style={{ fontSize: 12.5, color: "#475569", lineHeight: 1.5, flex: 1, minWidth: 180 }}>
+              {result.entry.reason}
+            </div>
+            <ExplainToggle open={explainOpen} onToggle={() => setExplainOpen((o) => !o)} />
+            {result.price != null && (
+              <button
+                type="button"
+                onClick={() => onAdd(result.ticker, result.price as number)}
+                style={{
+                  border: "1px solid #d6deea", borderRadius: 8, background: "#fff", color: "#1f2937",
+                  fontSize: 12, fontWeight: 700, padding: "6px 12px", cursor: "pointer", flexShrink: 0,
+                }}
+              >
+                + Add as a holding
+              </button>
+            )}
           </div>
-          <EntryBadge verdict={result.entry.verdict} />
-          <div style={{ fontSize: 12.5, color: "#475569", lineHeight: 1.5, flex: 1, minWidth: 180 }}>
-            {result.entry.reason}
-          </div>
-          {result.price != null && (
-            <button
-              type="button"
-              onClick={() => onAdd(result.ticker, result.price as number)}
-              style={{
-                border: "1px solid #d6deea", borderRadius: 8, background: "#fff", color: "#1f2937",
-                fontSize: 12, fontWeight: 700, padding: "6px 12px", cursor: "pointer", flexShrink: 0,
-              }}
-            >
-              + Add as a holding
-            </button>
+          {explainOpen && (
+            <div style={{
+              marginTop: 8, fontSize: 11.5, color: "#64748b",
+              background: "#fff", border: "1px solid #eef2f7", borderRadius: 8, padding: "8px 12px", lineHeight: 1.6,
+            }}>
+              {result.entry.detail}
+            </div>
           )}
         </div>
       )}
@@ -145,17 +158,50 @@ function TickerCheck({ onAdd }: { onAdd: (ticker: string, price: number) => void
   );
 }
 
+// Every verdict row shows the plain-English reason by default, and an
+// "Explain" toggle to the analyst-grade detail behind it — the actual
+// price/SMA/RSI values and thresholds, not just the conclusion (mirrors
+// ExplainCheckItem's pattern in shared.tsx, used the same way on Alex's
+// scan and Today's picks).
 function VerdictRow({ label, v, strong }: { label: string; v: RuleVerdict; strong?: boolean }) {
+  const [open, setOpen] = useState(false);
   return (
-    <div style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "7px 0" }}>
-      <div style={{ width: 92, flexShrink: 0, fontSize: 11.5, fontWeight: 700, color: "#64748b", marginTop: 2 }}>
-        {label}
+    <div style={{ padding: "7px 0" }}>
+      <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+        <div style={{ width: 92, flexShrink: 0, fontSize: 11.5, fontWeight: 700, color: "#64748b", marginTop: 2 }}>
+          {label}
+        </div>
+        <VerdictBadge verdict={v.verdict} />
+        <div style={{ fontSize: 12.5, color: strong ? "#0f172a" : "#475569", lineHeight: 1.5, fontWeight: strong ? 600 : 400, flex: 1 }}>
+          {v.reason}
+        </div>
+        <ExplainToggle open={open} onToggle={() => setOpen((o) => !o)} />
       </div>
-      <VerdictBadge verdict={v.verdict} />
-      <div style={{ fontSize: 12.5, color: strong ? "#0f172a" : "#475569", lineHeight: 1.5, fontWeight: strong ? 600 : 400 }}>
-        {v.reason}
-      </div>
+      {open && (
+        <div style={{
+          marginTop: 6, marginLeft: 102, fontSize: 11.5, color: "#64748b",
+          background: "#f8fafc", borderRadius: 8, padding: "8px 12px", lineHeight: 1.6,
+        }}>
+          {v.detail}
+        </div>
+      )}
     </div>
+  );
+}
+
+function ExplainToggle({ open, onToggle }: { open: boolean; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      style={{
+        flexShrink: 0, background: "none", border: "1px solid #e2e8f0",
+        borderRadius: 20, fontSize: 10, fontWeight: 700, color: "#64748b",
+        padding: "1px 7px", cursor: "pointer", letterSpacing: "0.03em",
+      }}
+    >
+      {open ? "Less" : "Explain"}
+    </button>
   );
 }
 

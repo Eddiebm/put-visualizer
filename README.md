@@ -230,6 +230,14 @@ logged in this app), and each position gets three independent, honest sell-side 
    not is called out as mixed, explicitly, rather than averaged into something that looks
    more confident than it is.
 
+Every one of those (the buy read included) carries two parallel explanations, not one:
+a plain-English reason shown by default, and an **Explain** toggle (same pattern as Alex's
+scan and Today's picks) revealing the analyst-grade version underneath — the actual live
+price, SMA20/50/200 values, RSI reading, and the exact thresholds compared, not just the
+conclusion. "Past your 10% stop-loss" is the simple-English layer; "Stop-loss triggers at or
+below $90.00 (-10%)" is the sophisticated one sitting right below it. A verdict you can't
+audit down to the numbers behind it isn't rigorous, it's just an opinion in a colored box.
+
 **🔎 Check a ticker before you buy**, above the holdings list, is the buy-side mirror:
 `entryVerdict()` reuses the same building blocks (50-/200-day averages, RSI) as the sell
 read but aimed the other way, and holds itself to a higher bar on purpose — "unconfirmed"
@@ -289,7 +297,7 @@ tree is TypeScript now (`strict: true`) — see **Since then** below.
 ## Running the tests and linter
 
 ```bash
-npm test          # Vitest — 321 tests: every pure module in src/lib/, every api/*.ts
+npm test          # Vitest — 323 tests: every pure module in src/lib/, every api/*.ts
                   # Edge function, and every component in src/components/ (RTL)
 npm run typecheck # tsc --noEmit — the primary safety net now (strict: true)
 npm run lint      # ESLint — react-hooks rules (rules-of-hooks, exhaustive-deps)
@@ -464,6 +472,13 @@ aggregation, grouping closed trades by ISO week).
     a poor reason to buy something you don't. "+ Add as a holding" carries a checked ticker
     and its live price straight into the add form. See **Buying and selling shares you
     already (or might) own** above.
+18. Every Holdings verdict now carries a second, analyst-grade explanation alongside its
+    plain-English reason — an **Explain** toggle (mirroring `ExplainCheckItem`'s existing
+    pattern from Alex's scan/Today's picks) reveals the actual price, SMA20/50/200 values,
+    RSI reading, and thresholds compared, not just the conclusion. Every `RuleVerdict`/
+    `EntryRead` now carries a required `detail` field alongside `reason`; new tests assert on
+    the detail's actual numeric content (e.g. the exact stop-loss/take-profit dollar
+    triggers), not just that it exists.
 
 **Still open:** backtesting whether Alex's scan's scoring weights (ported as-is from
 `stock-coach`) actually predict anything — they're currently unvalidated against
