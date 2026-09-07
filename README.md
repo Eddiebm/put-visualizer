@@ -207,6 +207,25 @@ distributed abuse, wire up Vercel KV or Upstash Redis instead and swap out `_rat
 internals; every call site (`rateLimit()`/`clientKey()`/`rateLimitResponse()`) stays the
 same.
 
+## Security headers
+
+`vercel.json` sends a `Content-Security-Policy` on every response, alongside
+`X-Content-Type-Options`, `X-Frame-Options`, and `Referrer-Policy`. It's tight almost
+everywhere on purpose — `default-src 'self'` and no external scripts/fonts/images/connect
+targets at all, since the app never actually needs any (every third-party call — Alpaca,
+Finnhub, Anthropic, tastytrade, Cloudflare D1 — happens server-side in `api/*.ts`, never
+from the browser). Verified with a real browser enforcing this exact policy against the
+built app, clicking through every tab: zero violations, zero page errors.
+
+The one real compromise: `style-src 'self' 'unsafe-inline'`. Every component in this app
+sets styles via React's `style={{...}}` prop (rendered as inline `style="..."` attributes),
+not CSS classes or a stylesheet — a CSP without `'unsafe-inline'` in `style-src` would
+break the entire UI. Tightening that further would mean rewriting the app's whole styling
+approach, not a CSP tweak; not worth it for an app with no XSS vector to defend against in
+the first place (no `dangerouslySetInnerHTML`, `eval`, or `new Function` anywhere in `src/`).
+This CSP is defense-in-depth against a vulnerability that doesn't currently exist, not a
+response to one that does.
+
 ## Buying and selling shares you already (or might) own
 
 Everywhere else in this app is about selling options — collecting premium, not owning the
@@ -494,6 +513,15 @@ aggregation, grouping closed trades by ISO week).
     it. This does not make the *entire* sync atomic — the delete step, and different
     batches from each other, are still separate requests, same limitation as before, just
     with a smaller blast radius (a batch of up to `UPSERT_BATCH_SIZE`, not a single row).
+20. Added an accessible label to the AI Coach panel's close button (`×`) — every other
+    icon-only close/delete/toggle button in the app already had a `title` or `aria-label`;
+    this one was the single one left unlabeled.
+21. Added a `Content-Security-Policy` header (see **Security headers** above), and fixed
+    `index.html`'s script tag, which referenced `/src/main.jsx` — a file that has never
+    existed in this all-TypeScript codebase; the actual file is `src/main.tsx`. The build
+    only ever worked because Vite's resolver silently falls back to a same-named file with
+    a different extension when the literal path doesn't exist. Corrected to the real
+    filename rather than continuing to rely on that undocumented fallback.
 
 **Still open:** backtesting whether Alex's scan's scoring weights (ported as-is from
 `stock-coach`) actually predict anything — they're currently unvalidated against
