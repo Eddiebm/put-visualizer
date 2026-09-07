@@ -1,11 +1,13 @@
 // ─── Holdings — tracking shares you already own ────────────────────────────
 // Everything else in this app is about selling options (puts, spreads,
-// strangles). This is the one place that answers a different question:
-// "I already own this stock — when should I sell it?" Three independent,
-// honest reads, not one black-box answer:
-//   1. `ruleVerdict`       — the % take-profit/stop-loss target you set yourself
-//   2. `technicalVerdict`  — a plain trend/momentum read (SMA50/200, RSI)
-//   3. `consensusVerdict`  — what happens when the two agree, or don't
+// strangles). This is the one place that answers two different questions:
+// "should I buy this stock" and "I already own this stock — when should I
+// sell it?" Independent, honest reads, not one black-box answer:
+//   1. `entryVerdict`      — a plain trend/momentum read for a NEW position
+//      (mirrors `technicalVerdict`, aimed the other direction)
+//   2. `ruleVerdict`       — the % take-profit/stop-loss target you set yourself
+//   3. `technicalVerdict`  — a plain trend/momentum read for an EXISTING one
+//   4. `consensusVerdict`  — what happens when #2 and #3 agree, or don't
 // None of this is a guarantee. A stop-loss % is a number you chose, not a
 // law of markets; a technical read can be wrong. Two honest opinions that
 // happen to agree are still just two opinions.
@@ -18,6 +20,60 @@ export type Verdict = "sell" | "watch" | "hold";
 export interface RuleVerdict {
   verdict: Verdict;
   reason: string;
+}
+
+export type EntryVerdict = "buy" | "wait" | "avoid";
+
+export interface EntryRead {
+  verdict: EntryVerdict;
+  reason: string;
+}
+
+// The buy-side mirror of `technicalVerdict`: same building blocks (SMA50,
+// SMA200, RSI), aimed at a different question. `technicalVerdict` asks "has
+// the trend broken for a position I hold" — cautious, biased toward "hold"
+// unless something is confirmed wrong. This asks "is the trend confirmed
+// good enough to start a NEW position" — the bar is higher, on purpose:
+// "unconfirmed" (no 200-day average yet, or above the 50-day but not the
+// 200-day) is a fine reason to keep holding something you already own, but
+// a poor reason to buy something you don't.
+export function entryVerdict(bars: Bar[] | null | undefined): EntryRead {
+  if (!bars || bars.length < 50) {
+    return { verdict: "wait", reason: "Not enough price history yet for a read." };
+  }
+  const closes = bars.map((b) => b.c);
+  const price = closes[closes.length - 1];
+  const sma20 = sma(closes, 20);
+  const sma50 = sma(closes, 50);
+  const sma200 = bars.length >= 200 ? sma(closes, 200) : null;
+  const rsiVal = rsi(closes, 14);
+
+  const aboveSma50 = sma50 != null && price > sma50;
+  const aboveSma200 = sma200 != null && price > sma200;
+
+  if (!aboveSma50) {
+    return { verdict: "avoid", reason: "Below its 50-day average — not in an uptrend right now." };
+  }
+  if (sma200 != null && !aboveSma200) {
+    return { verdict: "wait", reason: "Above its 50-day average but still below the 200-day — improving, not yet a confirmed uptrend." };
+  }
+
+  // Trend is confirmed (or at least not contradicted) — now check whether
+  // it's still a reasonable entry or already an extended, late one. Same
+  // "distance above the 20-day average" idea Alex's scan calls pullback
+  // quality, plus RSI: pulled back and not overbought is a tight entry;
+  // far above the 20-day or RSI hot is chasing a move that already happened.
+  const pullbackPct = sma20 != null && price > sma20 ? (price - sma20) / sma20 : null;
+  const extended = (pullbackPct != null && pullbackPct > 0.12) || (rsiVal != null && rsiVal >= 75);
+  const tight = pullbackPct != null && pullbackPct <= 0.07 && (rsiVal == null || rsiVal < 70);
+
+  if (extended) {
+    return { verdict: "wait", reason: "Uptrend intact, but extended — chasing it now means paying up for a move that's already happened." };
+  }
+  if (tight) {
+    return { verdict: "buy", reason: "In a confirmed uptrend and pulled back near its 20-day average — a reasonable entry, not a chase." };
+  }
+  return { verdict: "wait", reason: "Uptrend intact but a bit extended from its 20-day average — not the tightest entry." };
 }
 
 export interface Holding {

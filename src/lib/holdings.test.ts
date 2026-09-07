@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { holdingPnl, ruleVerdict, technicalVerdict, consensusVerdict, type Holding } from "./holdings";
+import { holdingPnl, ruleVerdict, technicalVerdict, consensusVerdict, entryVerdict, type Holding } from "./holdings";
 import type { Bar } from "../types";
 
 const HOLDING: Holding = {
@@ -108,6 +108,75 @@ describe("technicalVerdict", () => {
     const v = technicalVerdict(bars);
     expect(v.verdict).toBe("watch");
     expect(v.reason).toMatch(/RSI/);
+  });
+});
+
+// A long, strong linear uptrend for `preN` bars (establishes sma50/sma200
+// well below the current price with a confirmed uptrend), followed by
+// `zigN` bars alternating between `plateau` and `plateau + step` — a tight,
+// non-extended recent pullback with genuine (not zero-avgLoss-quirk) mixed
+// up/down moves, so RSI lands near neutral instead of pinned at 100.
+function risingThenTightZigzag(preN: number, zigN: number, start: number, plateau: number, step = 1): Bar[] {
+  const rising = Array.from({ length: preN }, (_, i) => {
+    const c = start + (plateau - start) * (i / preN);
+    return { h: c, l: c, c };
+  });
+  const zigzag = Array.from({ length: zigN }, (_, i) => {
+    const c = i % 2 === 0 ? plateau : plateau + step;
+    return { h: c, l: c, c };
+  });
+  return [...rising, ...zigzag];
+}
+
+describe("entryVerdict", () => {
+  it("waits when there isn't enough price history", () => {
+    expect(entryVerdict(null).verdict).toBe("wait");
+    expect(entryVerdict(flatBars(20, 100)).verdict).toBe("wait");
+  });
+
+  it("avoids a stock below its 50-day average", () => {
+    // 60 bars declining from 150 to 80 — the last 50 closes (which set the
+    // 50-day average) are still higher than the endpoint itself.
+    const bars = trendBars(60, 150, 80);
+    const v = entryVerdict(bars);
+    expect(v.verdict).toBe("avoid");
+    expect(v.reason).toMatch(/50-day/);
+  });
+
+  it("waits (unconfirmed) when above the 50-day but still below the 200-day", () => {
+    // 170 flat bars at 200, then 50 bars rising 100→140. The last 50 closes
+    // (the rising leg) average to 120, below the final price (140) — above
+    // its own 50-day average. But the 200-day average, dragged up by the
+    // long flat run at 200, sits at 180 — still well above the price.
+    const bars = [...flatBars(170, 200), ...trendBars(50, 100, 140)];
+    const v = entryVerdict(bars);
+    expect(v.verdict).toBe("wait");
+    expect(v.reason).toMatch(/200-day/);
+  });
+
+  it("waits (extended) on a confirmed uptrend that's run too hot", () => {
+    // A relentless 220-bar climb: confirmed above both SMAs, but a
+    // monotonic run pins RSI at 100 — extended, not a buy.
+    const bars = trendBars(220, 100, 300);
+    const v = entryVerdict(bars);
+    expect(v.verdict).toBe("wait");
+    expect(v.reason).toMatch(/extended/);
+  });
+
+  it("buys a confirmed uptrend pulled back tight to its 20-day average", () => {
+    const bars = risingThenTightZigzag(200, 20, 50, 150, 1);
+    const v = entryVerdict(bars);
+    expect(v.verdict).toBe("buy");
+  });
+
+  it("waits (not the tightest entry) on a confirmed uptrend that's moderately extended", () => {
+    // Same setup as the "buy" case, but a wider zigzag swing pushes the
+    // pullback distance from the 20-day average past the tight threshold
+    // without tripping the "extended" one.
+    const bars = risingThenTightZigzag(200, 20, 50, 150, 30);
+    const v = entryVerdict(bars);
+    expect(v.verdict).toBe("wait");
+    expect(v.reason).toMatch(/not the tightest/);
   });
 });
 

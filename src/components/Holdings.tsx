@@ -1,18 +1,19 @@
 import { useState, useEffect, useCallback } from "react";
 import { money, money2, moneySigned } from "../lib/format";
 import {
-  holdingPnl, ruleVerdict, technicalVerdict, consensusVerdict,
-  type Holding, type Verdict, type RuleVerdict,
+  holdingPnl, ruleVerdict, technicalVerdict, consensusVerdict, entryVerdict,
+  type Holding, type Verdict, type RuleVerdict, type EntryVerdict, type EntryRead,
 } from "../lib/holdings";
 import type { Bar } from "../types";
 
-// ─── Holdings — shares you already own ─────────────────────────────────────
+// ─── Holdings — shares you already own (and shares you might buy) ─────────
 // Every other tab in this app is about selling options. This is the one
-// place that answers "I already own this stock — when should I sell it?"
-// Three independent, honest reads per position (your own target rule, a
-// plain technical read, and what happens when they agree or don't) — see
-// src/lib/holdings.ts for the actual logic. Nothing here places an order;
-// this only tells you what the numbers say.
+// place that answers two questions instead: "should I buy this stock" and
+// "I already own this stock — when should I sell it?" Independent, honest
+// reads per position (your own target rule, a plain technical read, and
+// what happens when they agree or don't) — see src/lib/holdings.ts for the
+// actual logic. Nothing here places an order; this only tells you what the
+// numbers say.
 
 const STORAGE_KEY = "csp_holdings_v1";
 
@@ -46,6 +47,101 @@ function VerdictBadge({ verdict }: { verdict: Verdict }) {
     }}>
       {s.label}
     </span>
+  );
+}
+
+const ENTRY_VERDICT_STYLE: Record<EntryVerdict, { label: string; color: string; bg: string }> = {
+  buy:   { label: "BUY",   color: "#16a34a", bg: "#f0fdf4" },
+  wait:  { label: "WAIT",  color: "#d97706", bg: "#fffbeb" },
+  avoid: { label: "AVOID", color: "#e14c4c", bg: "#fff5f5" },
+};
+
+function EntryBadge({ verdict }: { verdict: EntryVerdict }) {
+  const s = ENTRY_VERDICT_STYLE[verdict];
+  return (
+    <span style={{
+      display: "inline-block", fontSize: 11, fontWeight: 800, letterSpacing: "0.03em",
+      color: s.color, background: s.bg, border: `1px solid ${s.color}30`,
+      borderRadius: 6, padding: "2px 8px", flexShrink: 0,
+    }}>
+      {s.label}
+    </span>
+  );
+}
+
+interface CheckResult {
+  ticker: string;
+  price: number | null;
+  entry: EntryRead;
+}
+
+function TickerCheck({ onAdd }: { onAdd: (ticker: string, price: number) => void }) {
+  const [ticker, setTicker] = useState("");
+  const [checking, setChecking] = useState(false);
+  const [result, setResult] = useState<CheckResult | null>(null);
+
+  async function check(e: React.FormEvent) {
+    e.preventDefault();
+    const t = ticker.trim().toUpperCase();
+    if (!t) return;
+    setChecking(true);
+    setResult(null);
+    const [quoteData, histData] = await Promise.all([
+      fetch(`/api/quote?symbol=${encodeURIComponent(t)}`).then((r) => (r.ok ? r.json() : null)).catch(() => null),
+      fetch(`/api/history?symbol=${encodeURIComponent(t)}&days=220`).then((r) => (r.ok ? r.json() : null)).catch(() => null),
+    ]);
+    const price = typeof quoteData?.price === "number" ? quoteData.price : null;
+    const bars = histData?.available ? (histData.bars ?? null) : null;
+    setResult({ ticker: t, price, entry: entryVerdict(bars) });
+    setChecking(false);
+  }
+
+  return (
+    <div style={{ marginBottom: 20, padding: 14, background: "#f8fafc", border: "1px solid #eef2f7", borderRadius: 12 }}>
+      <div style={{ fontWeight: 700, fontSize: 14, color: "#0f172a", marginBottom: 4 }}>🔎 Check a ticker before you buy</div>
+      <div style={{ fontSize: 12, color: "#64748b", marginBottom: 12, lineHeight: 1.5 }}>
+        The mirror of the sell signals below, aimed the other way: a confirmed uptrend, not
+        an extended one you'd be chasing.
+      </div>
+      <form onSubmit={check} style={{ display: "flex", gap: 8, alignItems: "flex-end", flexWrap: "wrap" }}>
+        <Field label="Ticker" value={ticker} onChange={(v) => setTicker(v.toUpperCase())} placeholder="MSFT" width={90} />
+        <button
+          type="submit" disabled={checking}
+          style={{
+            border: "none", borderRadius: 8, background: "#0f172a", color: "#fff",
+            fontSize: 13, fontWeight: 700, padding: "10px 18px", cursor: checking ? "default" : "pointer",
+            height: 38, opacity: checking ? 0.6 : 1,
+          }}
+        >
+          {checking ? "Checking…" : "Check"}
+        </button>
+      </form>
+
+      {result && (
+        <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid #eef2f7", display: "flex", gap: 10, alignItems: "flex-start", flexWrap: "wrap" }}>
+          <div style={{ minWidth: 90 }}>
+            <div style={{ fontWeight: 700, fontSize: 13, color: "#0f172a" }}>{result.ticker}</div>
+            <div style={{ fontSize: 11.5, color: "#94a3b8" }}>{result.price != null ? money2(result.price) : "price unavailable"}</div>
+          </div>
+          <EntryBadge verdict={result.entry.verdict} />
+          <div style={{ fontSize: 12.5, color: "#475569", lineHeight: 1.5, flex: 1, minWidth: 180 }}>
+            {result.entry.reason}
+          </div>
+          {result.price != null && (
+            <button
+              type="button"
+              onClick={() => onAdd(result.ticker, result.price as number)}
+              style={{
+                border: "1px solid #d6deea", borderRadius: 8, background: "#fff", color: "#1f2937",
+                fontSize: 12, fontWeight: 700, padding: "6px 12px", cursor: "pointer", flexShrink: 0,
+              }}
+            >
+              + Add as a holding
+            </button>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -129,6 +225,10 @@ export function Holdings() {
     setHoldings((hs) => hs.filter((h) => h.id !== id));
   }
 
+  function prefillFromCheck(ticker: string, price: number) {
+    setForm((f) => ({ ...f, ticker, costBasis: String(price) }));
+  }
+
   return (
     <div style={{ paddingTop: 8 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, marginBottom: 4 }}>
@@ -152,6 +252,8 @@ export function Holdings() {
         agree or don't. None of this places an order, and none of it is a guarantee — a % target is a
         number you chose, not a law of markets, and a technical read can be wrong.
       </div>
+
+      <TickerCheck onAdd={prefillFromCheck} />
 
       <form onSubmit={addHolding} style={{
         display: "flex", flexWrap: "wrap", gap: 10, alignItems: "flex-end",

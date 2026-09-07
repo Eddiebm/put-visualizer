@@ -27,9 +27,10 @@ same shape a small trading desk actually runs:
 - **📋 Sarah's book** — "what's open, and what does it add up to?" A cross-position view:
   total collateral locked, aggregate bad-week loss, days to expiration, and an earnings-risk
   flag per position — the numbers no single trade's calculator page shows on its own.
-- **💼 Holdings** — "I already own this stock — when should I sell it?" Every other tab is
-  about selling options; this is the one place for a plain stock position, wherever it came
-  from. See **Tracking shares you already own** below.
+- **💼 Holdings** — "should I buy this stock?" and "I already own this — when should I sell
+  it?" Every other tab is about selling options; this is the one place for a plain stock
+  position, wherever it came from. See **Buying and selling shares you already (or might)
+  own** below.
 - **📈 Elena's report** — "how did the week go?" Realized P&L grouped by the week a trade
   closed, wins and losses both, with average return on collateral always shown next to the
   worst single loss, never alone.
@@ -206,13 +207,14 @@ distributed abuse, wire up Vercel KV or Upstash Redis instead and swap out `_rat
 internals; every call site (`rateLimit()`/`clientKey()`/`rateLimitResponse()`) stays the
 same.
 
-## Tracking shares you already own
+## Buying and selling shares you already (or might) own
 
 Everywhere else in this app is about selling options — collecting premium, not owning the
-stock outright (unless you get assigned). **💼 Holdings** is the one tab for a different
-question: "I already own this stock — when should I sell it?" Add a ticker, share count,
-and cost basis (shares from anywhere, not just an assignment logged in this app), and each
-position gets three independent, honest reads (`src/lib/holdings.ts`):
+stock outright (unless you get assigned). **💼 Holdings** is the one tab for two different
+questions: "should I buy this stock" and "I already own this stock — when should I sell
+it?" Add a ticker, share count, and cost basis (shares from anywhere, not just an assignment
+logged in this app), and each position gets three independent, honest sell-side reads
+(`src/lib/holdings.ts`):
 
 1. **Your rule** — the take-profit % / stop-loss % you set when you added the position
    (defaults: +20% / -10%), checked against the live price.
@@ -228,13 +230,24 @@ position gets three independent, honest reads (`src/lib/holdings.ts`):
    not is called out as mixed, explicitly, rather than averaged into something that looks
    more confident than it is.
 
+**🔎 Check a ticker before you buy**, above the holdings list, is the buy-side mirror:
+`entryVerdict()` reuses the same building blocks (50-/200-day averages, RSI) as the sell
+read but aimed the other way, and holds itself to a higher bar on purpose — "unconfirmed"
+(above the 50-day but not yet the 200-day) is a fine reason to keep holding something you
+already own, but a poor reason to buy something you don't, so it reads **WAIT**, not **BUY**,
+in that case. A **BUY** verdict needs a *confirmed* uptrend (above both averages) *and* a
+tight, non-extended pullback to the 20-day average with RSI not overbought — otherwise it's
+**WAIT** ("uptrend intact but extended — you'd be chasing it") or **AVOID** (trend not
+confirmed at all). Check any ticker, not just ones you own, and "+ Add as a holding" carries
+the ticker and current price straight into the add-holding form.
+
 **Be honest about what this is.** A take-profit/stop-loss percentage is a number you chose,
-not a law of markets. A technical read can be wrong, and this one is a simple three-input
-read, not a sophisticated model. None of it places an order — every verdict is something to
+not a law of markets. A technical read can be wrong, and both of these are simple few-input
+reads, not a sophisticated model. None of it places an order — every verdict is something to
 read and decide on, the same as everywhere else in this app. Live price and history come
 from the same `/api/quote` and `/api/history` endpoints Alex's scan uses (see **Enabling
 live Alpaca data** above); without a live feed configured, positions still track and their
-rule-based verdict still works — only the technical read needs price history to say
+rule-based verdict still works — only the technical reads need price history to say
 anything. Holdings are saved to `localStorage` only (`csp_holdings_v1`) — there's no
 server-side backup for this tab the way there is for the journal.
 
@@ -276,7 +289,7 @@ tree is TypeScript now (`strict: true`) — see **Since then** below.
 ## Running the tests and linter
 
 ```bash
-npm test          # Vitest — 312 tests: every pure module in src/lib/, every api/*.ts
+npm test          # Vitest — 321 tests: every pure module in src/lib/, every api/*.ts
                   # Edge function, and every component in src/components/ (RTL)
 npm run typecheck # tsc --noEmit — the primary safety net now (strict: true)
 npm run lint      # ESLint — react-hooks rules (rules-of-hooks, exhaustive-deps)
@@ -444,7 +457,13 @@ aggregation, grouping closed trades by ISO week).
     real bug in its own first draft before it shipped: a holding under 200 days old (no
     200-day average yet) was reading as a confirmed downtrend ("sell") just because that
     average was `null`, rather than "unconfirmed" ("watch") — the tests written to cover the
-    watch-only case caught it immediately. See **Tracking shares you already own** above.
+    watch-only case caught it immediately.
+17. Added the buy-side counterpart, **🔎 Check a ticker before you buy**, inside the
+    Holdings tab — `entryVerdict()` mirrors `technicalVerdict()`'s building blocks but holds
+    a higher bar, since "unconfirmed" is a fine reason to keep holding something you own and
+    a poor reason to buy something you don't. "+ Add as a holding" carries a checked ticker
+    and its live price straight into the add form. See **Buying and selling shares you
+    already (or might) own** above.
 
 **Still open:** backtesting whether Alex's scan's scoring weights (ported as-is from
 `stock-coach`) actually predict anything — they're currently unvalidated against
