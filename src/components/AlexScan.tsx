@@ -17,11 +17,12 @@ import type { TechnicalAnalysis, MarketCondition } from "../types";
 interface AlexScanProps {
   capital: number;
   onLoad: (sym: string) => void;
+  onViewChart: (sym: string) => void;
 }
 
 type SortKey = keyof TechnicalAnalysis;
 
-export function AlexScan({ capital, onLoad }: AlexScanProps) {
+export function AlexScan({ capital, onLoad, onViewChart }: AlexScanProps) {
   const [results, setResults] = useState<TechnicalAnalysis[]>([]);
   const [loading, setLoading] = useState(true);
   const [condition, setCondition] = useState<MarketCondition | null>(null);
@@ -178,6 +179,9 @@ export function AlexScan({ capital, onLoad }: AlexScanProps) {
                     <td style={styles.screenerTd}>
                       <button type="button" onClick={() => setExpanded((x) => (x === r.sym ? null : r.sym))} style={styles.loadBtn}>
                         {expanded === r.sym ? "Hide" : "Checks"}
+                      </button>{" "}
+                      <button type="button" onClick={() => onViewChart(r.sym)} style={{ ...styles.loadBtn, marginLeft: 6 }}>
+                        🕯️ View chart
                       </button>{" "}
                       <button type="button" onClick={() => onLoad(r.sym)} style={{ ...styles.loadBtn, marginLeft: 6 }}>
                         Load ↑

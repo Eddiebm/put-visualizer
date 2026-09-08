@@ -95,9 +95,10 @@ interface TodayViewProps {
   capital: number;
   onLoadTrade: (pick: OpportunityPick) => void;
   onPicksReady?: (ctx: PicksReadyCtx) => void;
+  onViewChart: (sym: string) => void;
 }
 
-export function TodayView({ capital, onLoadTrade, onPicksReady }: TodayViewProps) {
+export function TodayView({ capital, onLoadTrade, onPicksReady, onViewChart }: TodayViewProps) {
   const [picks, setPicks] = useState<OpportunityPick[]>([]);
   const [loading, setLoading] = useState(true);
   const [condition, setCondition] = useState<MarketCondition | null>(null);
@@ -264,7 +265,7 @@ export function TodayView({ capital, onLoadTrade, onPicksReady }: TodayViewProps
           </div>
           <div style={styles.picksGrid}>
             {picks.map(p => (
-              <OpportunityCard key={p.sym} pick={p} capital={capital} onLoad={onLoadTrade} />
+              <OpportunityCard key={p.sym} pick={p} capital={capital} onLoad={onLoadTrade} onViewChart={onViewChart} />
             ))}
           </div>
         </>
@@ -277,9 +278,10 @@ interface OpportunityCardProps {
   pick: OpportunityPick;
   capital: number;
   onLoad: (pick: OpportunityPick) => void;
+  onViewChart: (sym: string) => void;
 }
 
-export function OpportunityCard({ pick, capital, onLoad }: OpportunityCardProps) {
+export function OpportunityCard({ pick, capital, onLoad, onViewChart }: OpportunityCardProps) {
   const [showAll, setShowAll] = useState(false);
   const { sym, name, price, strike, sw, longStrikeVal, dte, score, grade,
           earn, lose, collateralUsed, pop, cushion, richness,
@@ -309,6 +311,16 @@ export function OpportunityCard({ pick, capital, onLoad }: OpportunityCardProps)
         <div>
           <div style={{ fontWeight: 800, fontSize: 22, color: "#0f172a", lineHeight: 1 }}>{sym}</div>
           <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 3 }}>{name}</div>
+          <button
+            type="button"
+            onClick={() => onViewChart(sym)}
+            style={{
+              border: "none", background: "none", color: "#64748b", fontSize: 11, fontWeight: 700,
+              cursor: "pointer", padding: 0, marginTop: 4,
+            }}
+          >
+            🕯️ View chart
+          </button>
         </div>
         <div style={{ textAlign: "right" }}>
           <div style={{ fontSize: 24, fontWeight: 800, color: grade.color, lineHeight: 1 }}>{score}</div>

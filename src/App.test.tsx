@@ -133,9 +133,10 @@ vi.mock("./components/AiAssistant", () => ({
 }));
 
 vi.mock("./components/TodayView", () => ({
-  TodayView: ({ onLoadTrade, onPicksReady }: {
+  TodayView: ({ onLoadTrade, onPicksReady, onViewChart }: {
     onLoadTrade: (pick: unknown) => void;
     onPicksReady: (ctx: unknown) => void;
+    onViewChart: (sym: string) => void;
   }) => (
     <div data-testid="today-view-mock">
       <button
@@ -159,6 +160,7 @@ vi.mock("./components/TodayView", () => ({
       >
         report picks
       </button>
+      <button type="button" onClick={() => onViewChart("MSFT")}>view MSFT chart</button>
     </div>
   ),
 }));
@@ -172,9 +174,10 @@ vi.mock("./components/Screener", () => ({
 }));
 
 vi.mock("./components/AlexScan", () => ({
-  AlexScan: ({ onLoad }: { onLoad: (sym: string) => void }) => (
+  AlexScan: ({ onLoad, onViewChart }: { onLoad: (sym: string) => void; onViewChart: (sym: string) => void }) => (
     <div data-testid="alex-scan-mock">
       <button type="button" onClick={() => onLoad("TSLA")}>load TSLA</button>
+      <button type="button" onClick={() => onViewChart("TSLA")}>view TSLA chart</button>
     </div>
   ),
 }));
@@ -203,7 +206,17 @@ vi.mock("./components/LearnView", () => ({
 }));
 
 vi.mock("./components/Holdings", () => ({
-  Holdings: () => <div data-testid="holdings-mock" />,
+  Holdings: ({ onViewChart }: { onViewChart: (sym: string) => void }) => (
+    <div data-testid="holdings-mock">
+      <button type="button" onClick={() => onViewChart("GOOGL")}>view GOOGL chart</button>
+    </div>
+  ),
+}));
+
+vi.mock("./components/PriceChart", () => ({
+  PriceChart: ({ initialTicker }: { initialTicker: string }) => (
+    <div data-testid="price-chart-mock">initialTicker: {initialTicker || "(none)"}</div>
+  ),
 }));
 
 vi.mock("./components/AssignmentView", () => ({
@@ -262,6 +275,24 @@ describe("App", () => {
     await user.click(screen.getByRole("button", { name: "📈 Elena's report" }));
     expect(screen.getByTestId("weekly-report-mock")).toBeInTheDocument();
     expect(screen.queryByTestId("chart-mock")).not.toBeInTheDocument();
+  });
+
+  it("jumps to the Chart tab, pre-loaded with the ticker, from Alex's scan / Holdings / Today's picks", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "🔭 Alex's scan" }));
+    await user.click(screen.getByText("view TSLA chart"));
+    expect(screen.getByRole("button", { name: "🕯️ Chart" })).toBeInTheDocument();
+    expect(screen.getByTestId("price-chart-mock")).toHaveTextContent("initialTicker: TSLA");
+
+    await user.click(screen.getByRole("button", { name: "💼 Holdings" }));
+    await user.click(screen.getByText("view GOOGL chart"));
+    expect(screen.getByTestId("price-chart-mock")).toHaveTextContent("initialTicker: GOOGL");
+
+    await user.click(screen.getByRole("button", { name: "Today's picks" }));
+    await user.click(screen.getByText("view MSFT chart"));
+    expect(screen.getByTestId("price-chart-mock")).toHaveTextContent("initialTicker: MSFT");
   });
 
   it("logs a trade with the calculator's configured stop-loss multiplier, not just the default", async () => {

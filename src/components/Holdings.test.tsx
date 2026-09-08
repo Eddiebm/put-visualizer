@@ -10,7 +10,7 @@ beforeEach(() => {
 
 async function addHolding(shares = "10", costBasis = "100") {
   const user = userEvent.setup();
-  render(<Holdings />);
+  render(<Holdings onViewChart={() => {}} />);
   await user.type(screen.getByPlaceholderText("AAPL"), "aapl");
   await user.type(screen.getByPlaceholderText("100"), shares);
   await user.type(screen.getByPlaceholderText("150.00"), costBasis);
@@ -20,7 +20,7 @@ async function addHolding(shares = "10", costBasis = "100") {
 
 describe("Holdings — empty state", () => {
   it("shows an empty state with no holdings tracked", () => {
-    render(<Holdings />);
+    render(<Holdings onViewChart={() => {}} />);
     expect(screen.getByText("No holdings tracked yet")).toBeInTheDocument();
   });
 });
@@ -39,7 +39,7 @@ describe("Holdings — adding a position", () => {
 
   it("ignores a submit with no shares or cost basis entered", async () => {
     const user = userEvent.setup();
-    render(<Holdings />);
+    render(<Holdings onViewChart={() => {}} />);
     await user.type(screen.getByPlaceholderText("AAPL"), "aapl");
     await user.click(screen.getByText("Add holding"));
     expect(screen.getByText("No holdings tracked yet")).toBeInTheDocument();
@@ -59,6 +59,22 @@ describe("Holdings — removing a position", () => {
     expect(screen.getByText(/AAPL/)).toBeInTheDocument();
     await user.click(screen.getByTitle("Remove holding"));
     expect(screen.getByText("No holdings tracked yet")).toBeInTheDocument();
+  });
+
+  it("calls onViewChart with a holding card's ticker when its Chart button is clicked", async () => {
+    const onViewChart = vi.fn();
+    const user = userEvent.setup();
+    render(<Holdings onViewChart={onViewChart} />);
+    await user.type(screen.getByPlaceholderText("AAPL"), "aapl");
+    await user.type(screen.getByPlaceholderText("100"), "10");
+    await user.type(screen.getByPlaceholderText("150.00"), "100");
+    await user.click(screen.getByText("Add holding"));
+    expect(screen.getByText(/AAPL/)).toBeInTheDocument();
+
+    // The ticker checker's own "🕯️ View chart" only renders after a check is
+    // run (never happened here), so this is the holding card's.
+    await user.click(screen.getByText("🕯️ View chart"));
+    expect(onViewChart).toHaveBeenCalledWith("AAPL");
   });
 });
 
@@ -121,7 +137,7 @@ describe("Holdings — live data and verdicts", () => {
 
 describe("Holdings — checking a ticker before buying", () => {
   it("renders the check panel", () => {
-    render(<Holdings />);
+    render(<Holdings onViewChart={() => {}} />);
     expect(screen.getByText("🔎 Check a ticker before you buy")).toBeInTheDocument();
   });
 
@@ -136,7 +152,7 @@ describe("Holdings — checking a ticker before buying", () => {
       return Promise.resolve({ ok: false, json: () => Promise.resolve({}) });
     }));
     const user = userEvent.setup();
-    render(<Holdings />);
+    render(<Holdings onViewChart={() => {}} />);
     await user.type(screen.getByPlaceholderText("MSFT"), "msft");
     await user.click(screen.getByText("Check"));
     await waitFor(() => expect(screen.getByText("AVOID")).toBeInTheDocument());
@@ -148,13 +164,28 @@ describe("Holdings — checking a ticker before buying", () => {
     expect(screen.getByText(/SMA50 \$/)).toBeInTheDocument();
   });
 
+  it("calls onViewChart with the checked ticker when its Chart link is clicked", async () => {
+    vi.stubGlobal("fetch", vi.fn((url: string) => {
+      if (url.includes("/api/quote")) return Promise.resolve({ ok: true, json: () => Promise.resolve({ symbol: "MSFT", price: 118 }) });
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ available: false }) });
+    }));
+    const onViewChart = vi.fn();
+    const user = userEvent.setup();
+    render(<Holdings onViewChart={onViewChart} />);
+    await user.type(screen.getByPlaceholderText("MSFT"), "msft");
+    await user.click(screen.getByText("Check"));
+    await waitFor(() => expect(screen.getByText("🕯️ View chart")).toBeInTheDocument());
+    await user.click(screen.getByText("🕯️ View chart"));
+    expect(onViewChart).toHaveBeenCalledWith("MSFT");
+  });
+
   it("prefills the add-holding form's ticker and cost basis when 'Add as a holding' is clicked", async () => {
     vi.stubGlobal("fetch", vi.fn((url: string) => {
       if (url.includes("/api/quote")) return Promise.resolve({ ok: true, json: () => Promise.resolve({ symbol: "MSFT", price: 118 }) });
       return Promise.resolve({ ok: true, json: () => Promise.resolve({ available: false }) }); // not enough history — verdict doesn't matter for this test
     }));
     const user = userEvent.setup();
-    render(<Holdings />);
+    render(<Holdings onViewChart={() => {}} />);
     await user.type(screen.getByPlaceholderText("MSFT"), "msft");
     await user.click(screen.getByText("Check"));
     await waitFor(() => expect(screen.getByText("+ Add as a holding")).toBeInTheDocument());

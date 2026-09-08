@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { styles } from "../styles";
 import type { Bar } from "../types";
 
@@ -27,6 +27,15 @@ export function PriceChart({ initialTicker = "" }: PriceChartProps) {
   const [ticker, setTicker] = useState(initialTicker);
   const [days, setDays] = useState<number>(180);
   const [state, setState] = useState<FetchState>({ status: "idle" });
+
+  // Arriving here via a "view chart" link elsewhere (Alex's scan, Holdings,
+  // Today's picks) hands a ticker and should show that chart immediately,
+  // not just prefill the field and wait for a second click. A manual visit
+  // to this tab with no ticker (initialTicker="") leaves the form idle.
+  useEffect(() => {
+    if (initialTicker.trim()) load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally mount-only, using the initial ticker/days this component was given
+  }, []);
 
   async function load(e?: React.FormEvent) {
     e?.preventDefault();

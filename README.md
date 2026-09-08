@@ -36,7 +36,8 @@ same shape a small trading desk actually runs:
   worst single loss, never alone.
 - **🕯️ Chart** — daily OHLC candlesticks for any ticker, straight from the same
   `/api/history` data every scan/score above already fetches. No grade, no verdict, no
-  score attached — just the shape of the price, for a ticker you type in.
+  score attached — just the shape of the price, for a ticker you type in, or a "🕯️ View
+  chart" link from Alex's scan, Holdings, or Today's picks.
 - **Compare stocks**, **Review**, and **📚 Learn** — a manual options screener, a daily
   discipline scorecard, and a 60-day plain-English options curriculum.
 
@@ -335,7 +336,7 @@ tree is TypeScript now (`strict: true`) — see **Since then** below.
 ## Running the tests and linter
 
 ```bash
-npm test          # Vitest — 454 tests: every pure module in src/lib/, every api/*.ts
+npm test          # Vitest — 459 tests: every pure module in src/lib/, every api/*.ts
                   # Edge function, every component in src/components/ (RTL),
                   # App.tsx's own orchestration (tabs, sync, tour, journal, Tasty),
                   # and the Alex's-scan backtest harness (scripts/backtest/)
@@ -678,6 +679,21 @@ aggregation, grouping closed trades by ISO week).
     sits underneath; up/down candle colors match `Chart.tsx`'s existing gain/loss palette.
     10 new tests (`PriceChart.test.tsx`), including one confirming a missing `open` (an
     optional `Bar` field) falls back to close rather than crashing.
+33. Wired the Chart tab into the rest of the app — a "🕯️ View chart" link on every Alex's
+    scan row, the Holdings ticker checker, each Holdings position card, and each Today's
+    picks card, all jumping to Chart pre-loaded (and auto-loaded, no second click needed)
+    with that ticker. Without this, Chart was a page nobody would actually visit — the point
+    is seeing the candles behind a grade you're already looking at, not a separate
+    destination you have to retype a ticker into. `App.tsx` gained a small `chartTicker`
+    state + `viewChart(sym)` handler shared by all four call sites.
+    Caught by an actual browser smoke test (Playwright against the real dev server, not
+    just unit tests): the first pass labeled every one of those links "🕯️ Chart" — the
+    *exact* same text as the Chart tab itself, so `getByText`/accessible-name lookups
+    (and, in practice, a screen reader or browser find-in-page) couldn't tell a row's
+    "jump to this ticker's chart" link apart from the tab button. Renamed the row-level
+    links to "🕯️ View chart" to disambiguate; re-verified visually afterward (tab switch,
+    ticker prefilled, chart auto-loads). 5 new tests across `AlexScan.test.tsx`,
+    `Holdings.test.tsx`, `TodayView.test.tsx`, and `App.test.tsx`.
 
 ## Backtesting this app's buy/sell signals (`scripts/backtest/`)
 

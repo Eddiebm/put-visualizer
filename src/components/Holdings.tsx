@@ -75,7 +75,13 @@ interface CheckResult {
   entry: EntryRead;
 }
 
-function TickerCheck({ onAdd }: { onAdd: (ticker: string, price: number) => void }) {
+function TickerCheck({
+  onAdd,
+  onViewChart,
+}: {
+  onAdd: (ticker: string, price: number) => void;
+  onViewChart: (ticker: string) => void;
+}) {
   const [ticker, setTicker] = useState("");
   const [checking, setChecking] = useState(false);
   const [result, setResult] = useState<CheckResult | null>(null);
@@ -131,6 +137,16 @@ function TickerCheck({ onAdd }: { onAdd: (ticker: string, price: number) => void
               {result.entry.reason}
             </div>
             <ExplainToggle open={explainOpen} onToggle={() => setExplainOpen((o) => !o)} />
+            <button
+              type="button"
+              onClick={() => onViewChart(result.ticker)}
+              style={{
+                border: "1px solid #d6deea", borderRadius: 8, background: "#fff", color: "#1f2937",
+                fontSize: 12, fontWeight: 700, padding: "6px 12px", cursor: "pointer", flexShrink: 0,
+              }}
+            >
+              🕯️ View chart
+            </button>
             {result.price != null && (
               <button
                 type="button"
@@ -215,7 +231,11 @@ interface FormState {
 
 const EMPTY_FORM: FormState = { ticker: "", shares: "", costBasis: "", takeProfitPct: "20", stopLossPct: "10" };
 
-export function Holdings() {
+interface HoldingsProps {
+  onViewChart: (ticker: string) => void;
+}
+
+export function Holdings({ onViewChart }: HoldingsProps) {
   const [holdings, setHoldings] = useState<Holding[]>(loadHoldings);
   const [live, setLive] = useState<Record<string, LiveData>>({});
   const [loading, setLoading] = useState(false);
@@ -299,7 +319,7 @@ export function Holdings() {
         number you chose, not a law of markets, and a technical read can be wrong.
       </div>
 
-      <TickerCheck onAdd={prefillFromCheck} />
+      <TickerCheck onAdd={prefillFromCheck} onViewChart={onViewChart} />
 
       <form onSubmit={addHolding} style={{
         display: "flex", flexWrap: "wrap", gap: 10, alignItems: "flex-end",
@@ -359,13 +379,24 @@ export function Holdings() {
                       )}
                     </div>
                   </div>
-                  <button
-                    type="button" onClick={() => removeHolding(h.id)}
-                    style={{ border: "none", background: "transparent", color: "#cbd5e1", fontSize: 15, cursor: "pointer", padding: "2px 4px", flexShrink: 0 }}
-                    title="Remove holding"
-                  >
-                    ✕
-                  </button>
+                  <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
+                    <button
+                      type="button" onClick={() => onViewChart(h.ticker)}
+                      style={{
+                        border: "1px solid #e2e8f0", borderRadius: 8, background: "#fff", color: "#475569",
+                        fontSize: 11, fontWeight: 700, padding: "5px 10px", cursor: "pointer",
+                      }}
+                    >
+                      🕯️ View chart
+                    </button>
+                    <button
+                      type="button" onClick={() => removeHolding(h.id)}
+                      style={{ border: "none", background: "transparent", color: "#cbd5e1", fontSize: 15, cursor: "pointer", padding: "2px 4px" }}
+                      title="Remove holding"
+                    >
+                      ✕
+                    </button>
+                  </div>
                 </div>
 
                 <div style={{ marginTop: 8, borderTop: "1px solid #f1f5f9" }}>

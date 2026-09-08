@@ -103,6 +103,7 @@ export default function App() {
   const [rvol, setRvol] = useState<number | null>(null);      // realized vol from 30d price history
   const [delta, setDelta] = useState<number | null>(null);    // from Alpaca option snapshot
   const [tab, setTab] = useState("today");
+  const [chartTicker, setChartTicker] = useState("");
   const [aiContext, setAiContext] = useState<AiContextState>({ picks: [], marketCondition: null });
   const [scanStats, setScanStats] = useState<ScanStatsState>({ totalScanned: 0, qualified: 0, condition: null });
   const [tasty, setTasty] = useState<TastySession | null>(() => {
@@ -278,6 +279,15 @@ export default function App() {
         }
       })
       .catch(() => { /* ignore */ });
+  }
+
+  // Jumps to the Chart tab pre-loaded with a ticker — the "sanity check"
+  // link from Alex's scan, Holdings, and Today's picks: see the actual
+  // candles behind a grade/verdict, not just the number.
+  function viewChart(sym: string) {
+    setChartTicker(sym);
+    setTab("chart");
+    window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
   const mode: Mode = inputs.mode;
@@ -477,6 +487,7 @@ export default function App() {
               selectCompany(pick.sym, { keepStrike: true });
               window.scrollTo({ top: 0, behavior: "smooth" });
             }}
+            onViewChart={viewChart}
           />
         )}
 
@@ -505,6 +516,7 @@ export default function App() {
               setTab("calculator");
               window.scrollTo({ top: 0, behavior: "smooth" });
             }}
+            onViewChart={viewChart}
           />
         )}
 
@@ -519,9 +531,9 @@ export default function App() {
           />
         )}
 
-        {tab === "holdings" && <Holdings />}
+        {tab === "holdings" && <Holdings onViewChart={viewChart} />}
 
-        {tab === "chart" && <PriceChart initialTicker={ticker} />}
+        {tab === "chart" && <PriceChart initialTicker={chartTicker || ticker} />}
 
         {tab === "weekly" && <WeeklyReport journal={journal} />}
 
