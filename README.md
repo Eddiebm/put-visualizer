@@ -34,6 +34,9 @@ same shape a small trading desk actually runs:
 - **📈 Elena's report** — "how did the week go?" Realized P&L grouped by the week a trade
   closed, wins and losses both, with average return on collateral always shown next to the
   worst single loss, never alone.
+- **🕯️ Chart** — daily OHLC candlesticks for any ticker, straight from the same
+  `/api/history` data every scan/score above already fetches. No grade, no verdict, no
+  score attached — just the shape of the price, for a ticker you type in.
 - **Compare stocks**, **Review**, and **📚 Learn** — a manual options screener, a daily
   discipline scorecard, and a 60-day plain-English options curriculum.
 
@@ -332,7 +335,7 @@ tree is TypeScript now (`strict: true`) — see **Since then** below.
 ## Running the tests and linter
 
 ```bash
-npm test          # Vitest — 444 tests: every pure module in src/lib/, every api/*.ts
+npm test          # Vitest — 454 tests: every pure module in src/lib/, every api/*.ts
                   # Edge function, every component in src/components/ (RTL),
                   # App.tsx's own orchestration (tabs, sync, tour, journal, Tasty),
                   # and the Alex's-scan backtest harness (scripts/backtest/)
@@ -667,6 +670,14 @@ aggregation, grouping closed trades by ISO week).
     the strike/premium — the same no-lookahead discipline the walk-forward engine itself is
     built on. Exposed `--year-breakdown` and `--csp-overlay` on the GitHub Actions workflow
     too.
+32. Added a **🕯️ Chart** tab — daily OHLC candlesticks (`src/components/PriceChart.tsx`),
+    pure hand-rolled SVG like `Chart.tsx`'s own P&L curve, no charting library. Fetches
+    `/api/history` for a typed ticker (90/180/365-day range), the same endpoint every
+    scan/score elsewhere already calls, and draws it with no grade, verdict, or score
+    attached — a look at the shape of the price, not a signal of its own. A volume subplot
+    sits underneath; up/down candle colors match `Chart.tsx`'s existing gain/loss palette.
+    10 new tests (`PriceChart.test.tsx`), including one confirming a missing `open` (an
+    optional `Bar` field) falls back to close rather than crashing.
 
 ## Backtesting this app's buy/sell signals (`scripts/backtest/`)
 

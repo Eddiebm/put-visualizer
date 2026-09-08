@@ -34,6 +34,7 @@ import { DayReview } from "./components/DayReview";
 import { LearnView } from "./components/LearnView";
 import { Holdings } from "./components/Holdings";
 import { AssignmentView } from "./components/AssignmentView";
+import { PriceChart } from "./components/PriceChart";
 
 // Local UI fetch-status shapes — not shared domain types, just what this
 // component tracks about an in-flight/completed quote request.
@@ -83,6 +84,7 @@ const TABS = [
   { key: "compare", label: "Compare stocks" },
   { key: "portfolio", label: "📋 Sarah's book" },
   { key: "holdings", label: "💼 Holdings" },
+  { key: "chart", label: "🕯️ Chart" },
   { key: "weekly", label: "📈 Elena's report" },
   { key: "review", label: "Review" },
   { key: "learn", label: "📚 Learn" },
@@ -518,6 +520,8 @@ export default function App() {
         )}
 
         {tab === "holdings" && <Holdings />}
+
+        {tab === "chart" && <PriceChart initialTicker={ticker} />}
 
         {tab === "weekly" && <WeeklyReport journal={journal} />}
 
