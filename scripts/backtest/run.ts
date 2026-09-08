@@ -37,7 +37,7 @@
 // Independent of --source: --universe=<path> gates evaluation to a
 // point-in-time index universe (see universe.ts) — a CSV of which symbol
 // was eligible from when to when, closing the survivorship-bias gap in
-// COMPANIES (today's ~40 large caps/ETFs) by including names that have
+// COMPANIES (today's ~76 large caps/ETFs) by including names that have
 // since been delisted/dropped from the watchlist. When given without an
 // explicit --tickers, the ticker list defaults to every symbol that
 // *ever* appears in the universe file, not just today's COMPANIES.

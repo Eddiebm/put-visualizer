@@ -25,6 +25,14 @@ const RAW: Record<string, TickerMeta> = {
   EEM: { sector: "ETF", capTier: "etf" },
   XLE: { sector: "ETF", capTier: "etf" },
   XLF: { sector: "ETF", capTier: "etf" },
+  XLK: { sector: "ETF", capTier: "etf" },
+  XLI: { sector: "ETF", capTier: "etf" },
+  XLU: { sector: "ETF", capTier: "etf" },
+  XLV: { sector: "ETF", capTier: "etf" },
+  XLP: { sector: "ETF", capTier: "etf" },
+  XLY: { sector: "ETF", capTier: "etf" },
+  XLB: { sector: "ETF", capTier: "etf" },
+  XLRE: { sector: "ETF", capTier: "etf" },
 
   // Big Tech
   AAPL: { sector: "Technology", capTier: "mega" },
@@ -35,6 +43,13 @@ const RAW: Record<string, TickerMeta> = {
   META: { sector: "Communication Services", capTier: "mega" },
   NFLX: { sector: "Communication Services", capTier: "mega" },
   CRM: { sector: "Technology", capTier: "large" },
+  ORCL: { sector: "Technology", capTier: "mega" },
+  ADBE: { sector: "Technology", capTier: "large" },
+  NOW: { sector: "Technology", capTier: "large" },
+  AVGO: { sector: "Technology", capTier: "mega" },
+  QCOM: { sector: "Technology", capTier: "large" },
+  TXN: { sector: "Technology", capTier: "large" },
+  MU: { sector: "Technology", capTier: "large" },
 
   // Growth / High Vol
   TSLA: { sector: "Consumer Discretionary", capTier: "mega" },
@@ -45,16 +60,33 @@ const RAW: Record<string, TickerMeta> = {
   PYPL: { sector: "Financials", capTier: "large" },
   SNAP: { sector: "Communication Services", capTier: "mid" },
 
+  // Industrials
+  BA: { sector: "Industrials", capTier: "large" },
+  CAT: { sector: "Industrials", capTier: "large" },
+  HON: { sector: "Industrials", capTier: "large" },
+  GE: { sector: "Industrials", capTier: "large" },
+  UPS: { sector: "Industrials", capTier: "large" },
+
   // Value / Income
   JPM: { sector: "Financials", capTier: "mega" },
   BAC: { sector: "Financials", capTier: "mega" },
   GS: { sector: "Financials", capTier: "large" },
   WFC: { sector: "Financials", capTier: "large" },
+  MS: { sector: "Financials", capTier: "large" },
+  C: { sector: "Financials", capTier: "large" },
+  AXP: { sector: "Financials", capTier: "large" },
+  V: { sector: "Financials", capTier: "mega" },
+  MA: { sector: "Financials", capTier: "mega" },
   KO: { sector: "Consumer Staples", capTier: "mega" },
   MCD: { sector: "Consumer Discretionary", capTier: "mega" },
   WMT: { sector: "Consumer Staples", capTier: "mega" },
   HD: { sector: "Consumer Discretionary", capTier: "mega" },
   NKE: { sector: "Consumer Discretionary", capTier: "large" },
+  PG: { sector: "Consumer Staples", capTier: "mega" },
+  COST: { sector: "Consumer Staples", capTier: "mega" },
+  PEP: { sector: "Consumer Staples", capTier: "mega" },
+  DIS: { sector: "Communication Services", capTier: "large" },
+  SBUX: { sector: "Consumer Discretionary", capTier: "large" },
 
   // Energy
   XOM: { sector: "Energy", capTier: "mega" },
@@ -65,6 +97,11 @@ const RAW: Record<string, TickerMeta> = {
   UNH: { sector: "Healthcare", capTier: "mega" },
   PFE: { sector: "Healthcare", capTier: "large" },
   MRNA: { sector: "Healthcare", capTier: "mid" },
+  ABBV: { sector: "Healthcare", capTier: "mega" },
+  LLY: { sector: "Healthcare", capTier: "mega" },
+  MRK: { sector: "Healthcare", capTier: "large" },
+  TMO: { sector: "Healthcare", capTier: "large" },
+  GILD: { sector: "Healthcare", capTier: "large" },
 
   // Speculative / Small
   F: { sector: "Consumer Discretionary", capTier: "mid" },

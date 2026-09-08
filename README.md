@@ -19,8 +19,9 @@ The app is organized around three questions, framed as three people checking in 
 same shape a small trading desk actually runs:
 
 - **🔭 Alex's scan** — "what's worth a look?" A technical read (trend, pullback to
-  support, relative strength vs. SPY, momentum, volume) across ~40 stocks/ETFs, independent
-  from the options-pricing scan on **Today's picks**. Ported from a companion project,
+  support, relative strength vs. SPY, momentum, volume) across the `COMPANIES` watchlist
+  (76 stocks/ETFs — see **Watchlist size** below for why not more), independent from the
+  options-pricing scan on **Today's picks**. Ported from a companion project,
   [`stock-coach`](https://github.com/Eddiebm/stock-coach).
 - **Calculator + journal** — structure a trade, log it, and record how it actually closed
   (wins *and* losses, never netted away).
@@ -211,6 +212,27 @@ distributed abuse, wire up Vercel KV or Upstash Redis instead and swap out `_rat
 internals; every call site (`rateLimit()`/`clientKey()`/`rateLimitResponse()`) stays the
 same.
 
+### Watchlist size — why `COMPANIES` isn't bigger
+
+`src/appConstants.ts`'s `COMPANIES` (76 tickers as of the last expansion, up from 41) feeds
+every automated scan in the app — Today's picks and Alex's scan both loop over the full
+list on every run. Today's picks calls `/api/quote`, `/api/history`, and `/api/option` once
+per ticker; Alex's scan calls `/api/history` once per ticker plus one shared `/api/earnings`
+call. Both hit `/api/history` — the same rate limiter, same 5-minute window (see **Rate
+limiting** above, 200 requests/5min) — so a user running Today's picks and then Alex's scan
+inside the same window sums their `/api/history` calls against one shared ceiling: roughly
+`2 × COMPANIES.length + 1` requests. At 76 tickers that's ~153, leaving real headroom for a
+refresh click or a Holdings ticker check in the same window; at 100 it's ~201, already over
+the limit *before* accounting for anything else. That's the actual ceiling on this list's
+size — not an arbitrary choice, and not something more rows alone can fix.
+
+Growing meaningfully past ~100 (S&P 500-scale) needs a different architecture: a
+scheduled/cached pre-scan (cron job populates results server-side, the live app reads the
+cache) instead of an on-demand per-visit fetch of every ticker's quote/history/option. That's
+a real project, not a bigger array — tracked as a "Next steps" item on the backtest side
+(`scripts/backtest/` already supports scanning far more than 76 via `--tickers`/`--universe`,
+since it's offline and not rate-limited the same way) but not yet built for the live app.
+
 ## Security headers
 
 `vercel.json` sends a `Content-Security-Policy` on every response, alongside
@@ -336,7 +358,7 @@ tree is TypeScript now (`strict: true`) — see **Since then** below.
 ## Running the tests and linter
 
 ```bash
-npm test          # Vitest — 459 tests: every pure module in src/lib/, every api/*.ts
+npm test          # Vitest — 462 tests: every pure module in src/lib/, every api/*.ts
                   # Edge function, every component in src/components/ (RTL),
                   # App.tsx's own orchestration (tabs, sync, tour, journal, Tasty),
                   # and the Alex's-scan backtest harness (scripts/backtest/)
@@ -694,6 +716,23 @@ aggregation, grouping closed trades by ISO week).
     links to "🕯️ View chart" to disambiguate; re-verified visually afterward (tab switch,
     ticker prefilled, chart auto-loads). 5 new tests across `AlexScan.test.tsx`,
     `Holdings.test.tsx`, `TodayView.test.tsx`, and `App.test.tsx`.
+34. Expanded `COMPANIES` from 41 to 76 tickers — more sector ETFs (tech, industrials,
+    utilities, health care, staples, discretionary, materials, real estate) and more names
+    per sector (semis, industrials, financials, healthcare, consumer), still all liquid,
+    optionable large-caps — not a jump to full market coverage. See the new **Watchlist
+    size** note (under **Rate limiting**) for exactly why 76 and not more right now:
+    Today's picks and Alex's scan both call `/api/history` once per ticker, share that
+    endpoint's 200-requests/5-minute rate limit, and can both run in the same window — so
+    the real ceiling is roughly `2 × COMPANIES.length + 1` against that one limit, not an
+    arbitrary preference. Going meaningfully bigger (S&P 500-scale) needs a
+    scheduled/cached pre-scan instead of the current on-demand per-visit fetch — a real
+    architecture change, tracked as an open item, not done here. `TICKER_META`
+    (`scripts/backtest/tickerMeta.ts`) updated in lockstep for the 35 new tickers so its
+    own sync test doesn't fail. New `appConstants.test.ts` (3 tests) — including a
+    guardrail that fails loudly if `COMPANIES` ever grows past the size that combined
+    math can safely support, instead of letting it silently regress into live 429s.
+    Verified visually (Alex's scan and Today's picks both render cleanly at the new count,
+    no console errors beyond the expected missing-API-route 404 in this sandbox).
 
 ## Backtesting this app's buy/sell signals (`scripts/backtest/`)
 
@@ -816,7 +855,7 @@ on any future run.
    the latter doesn't require solving the former.
 6. **Earnings blackout** — needs a historical earnings-date source; Tiingo's free tier
    doesn't include one. Unresolved pending a data-source decision.
-7. **Wider universe** — S&P 500 (~500 names) rather than 41 mega-caps/ETFs for `alex-scan`,
+7. **Wider universe** — S&P 500 (~500 names) rather than 76 mega-caps/ETFs for `alex-scan`,
    both for statistical power and to check the sector/cap-tier breakdown
    (`--sector-breakdown`, `--cap-breakdown`) on a real spread of names. For
    `holdings-entry`/`holdings-exit` specifically, a broader range of stock classes
@@ -879,7 +918,7 @@ multi-year walk-forward backtest needs far more trailing history than any single
 request does.
 
 **Survivorship bias in the ticker list itself** — Alex's scan's `COMPANIES` watchlist
-(`src/appConstants.ts`) is today's ~40 large caps/ETFs, so backtesting against it, no
+(`src/appConstants.ts`) is today's ~76 large caps/ETFs, so backtesting against it, no
 matter how deep the price history, still excludes whatever would have been in scope back
 then but later got delisted or went to zero. `--universe=<path>` (a CSV of
 `Symbol,StartDate,EndDate` membership intervals — blank `EndDate` means still a member)

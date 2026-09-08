@@ -32,15 +32,31 @@ export const AI_ACCESS_KEY_STORAGE = "ai_access_key";
 // fallback when the live /api/quote endpoint is unreachable. Editable; the UI
 // labels these clearly as approximate so they're never mistaken for live data.
 export const SNAPSHOT_DATE = "Jun 27, 2026";
+// 76 tickers as of the last expansion (41 -> 76) — see README's "Watchlist
+// size" note for exactly why this isn't bigger: Today's picks and Alex's
+// scan both call /api/history per ticker, and that endpoint's rate limit
+// (api/history.ts, 200 requests/5min, shared across every scan that hits
+// it) is the actual ceiling on how large this list can safely get without
+// a caching/scheduled-scan redesign. Going meaningfully past ~100 needs
+// that redesign first, not just more rows here.
 export const COMPANIES: Company[] = [
-  // ETFs — deepest options liquidity, no earnings risk
+  // ETFs (broad) — deepest options liquidity, no earnings risk
   { ticker: "SPY",  name: "S&P 500 ETF",       price: 580 },
   { ticker: "QQQ",  name: "Nasdaq 100 ETF",     price: 490 },
   { ticker: "IWM",  name: "Russell 2000 ETF",   price: 210 },
   { ticker: "GLD",  name: "Gold ETF",           price: 315 },
   { ticker: "EEM",  name: "Emerging Markets ETF", price: 42 },
+  // ETFs (sector) — same liquidity/no-earnings-risk reasoning, broader coverage
   { ticker: "XLE",  name: "Energy Sector ETF",  price: 90 },
   { ticker: "XLF",  name: "Financials ETF",     price: 50 },
+  { ticker: "XLK",  name: "Technology ETF",     price: 250 },
+  { ticker: "XLI",  name: "Industrials ETF",    price: 150 },
+  { ticker: "XLU",  name: "Utilities ETF",      price: 85 },
+  { ticker: "XLV",  name: "Health Care ETF",    price: 145 },
+  { ticker: "XLP",  name: "Consumer Staples ETF", price: 80 },
+  { ticker: "XLY",  name: "Consumer Discretionary ETF", price: 225 },
+  { ticker: "XLB",  name: "Materials ETF",      price: 95 },
+  { ticker: "XLRE", name: "Real Estate ETF",    price: 42 },
   // Big Tech
   { ticker: "AAPL", name: "Apple",              price: 284 },
   { ticker: "MSFT", name: "Microsoft",          price: 373 },
@@ -50,6 +66,13 @@ export const COMPANIES: Company[] = [
   { ticker: "META", name: "Meta",               price: 550 },
   { ticker: "NFLX", name: "Netflix",            price: 1250 },
   { ticker: "CRM",  name: "Salesforce",         price: 320 },
+  { ticker: "ORCL", name: "Oracle",             price: 180 },
+  { ticker: "ADBE", name: "Adobe",              price: 450 },
+  { ticker: "NOW",  name: "ServiceNow",         price: 950 },
+  { ticker: "AVGO", name: "Broadcom",           price: 180 },
+  { ticker: "QCOM", name: "Qualcomm",           price: 170 },
+  { ticker: "TXN",  name: "Texas Instruments",  price: 200 },
+  { ticker: "MU",   name: "Micron",             price: 110 },
   // Growth / High Vol
   { ticker: "TSLA", name: "Tesla",              price: 380 },
   { ticker: "AMD",  name: "AMD",                price: 170 },
@@ -58,16 +81,32 @@ export const COMPANIES: Company[] = [
   { ticker: "UBER", name: "Uber",               price: 90 },
   { ticker: "PYPL", name: "PayPal",             price: 75 },
   { ticker: "SNAP", name: "Snap",               price: 12 },
+  // Industrials
+  { ticker: "BA",   name: "Boeing",             price: 180 },
+  { ticker: "CAT",  name: "Caterpillar",        price: 380 },
+  { ticker: "HON",  name: "Honeywell",          price: 220 },
+  { ticker: "GE",   name: "GE Aerospace",       price: 200 },
+  { ticker: "UPS",  name: "UPS",                price: 130 },
   // Value / Income
   { ticker: "JPM",  name: "JPMorgan",           price: 329 },
   { ticker: "BAC",  name: "Bank of America",    price: 48 },
   { ticker: "GS",   name: "Goldman Sachs",      price: 650 },
   { ticker: "WFC",  name: "Wells Fargo",        price: 78 },
+  { ticker: "MS",   name: "Morgan Stanley",     price: 135 },
+  { ticker: "C",    name: "Citigroup",          price: 75 },
+  { ticker: "AXP",  name: "American Express",   price: 300 },
+  { ticker: "V",    name: "Visa",               price: 330 },
+  { ticker: "MA",   name: "Mastercard",         price: 530 },
   { ticker: "KO",   name: "Coca-Cola",          price: 83 },
   { ticker: "MCD",  name: "McDonald's",         price: 325 },
   { ticker: "WMT",  name: "Walmart",            price: 98 },
   { ticker: "HD",   name: "Home Depot",         price: 410 },
   { ticker: "NKE",  name: "Nike",               price: 62 },
+  { ticker: "PG",   name: "Procter & Gamble",   price: 165 },
+  { ticker: "COST", name: "Costco",             price: 950 },
+  { ticker: "PEP",  name: "PepsiCo",            price: 135 },
+  { ticker: "DIS",  name: "Disney",             price: 110 },
+  { ticker: "SBUX", name: "Starbucks",          price: 95 },
   // Energy
   { ticker: "XOM",  name: "ExxonMobil",         price: 118 },
   { ticker: "CVX",  name: "Chevron",            price: 155 },
@@ -76,6 +115,11 @@ export const COMPANIES: Company[] = [
   { ticker: "UNH",  name: "UnitedHealth",       price: 310 },
   { ticker: "PFE",  name: "Pfizer",             price: 24 },
   { ticker: "MRNA", name: "Moderna",            price: 38 },
+  { ticker: "ABBV", name: "AbbVie",             price: 190 },
+  { ticker: "LLY",  name: "Eli Lilly",          price: 800 },
+  { ticker: "MRK",  name: "Merck",              price: 85 },
+  { ticker: "TMO",  name: "Thermo Fisher",      price: 450 },
+  { ticker: "GILD", name: "Gilead Sciences",    price: 110 },
   // Speculative / Small
   { ticker: "F",    name: "Ford",               price: 14 },
   { ticker: "SOFI", name: "SoFi",               price: 18 },

@@ -6,7 +6,7 @@ import userEvent from "@testing-library/user-event";
 //
 // Every child component here already has its own thorough test file (see
 // src/components/*.test.tsx) — re-testing their internals would be
-// redundant and would drag in ~40 companies' worth of network calls from
+// redundant and would drag in ~76 companies' worth of network calls from
 // TodayView/AlexScan alone. Instead every child is replaced with a small
 // stub that exposes just enough surface (a testid, and buttons that call
 // the real prop callbacks App.tsx passed down) to exercise what only

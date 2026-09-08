@@ -1,6 +1,6 @@
 // Point-in-time index membership — this is the piece that actually closes
 // the survivorship-bias gap the README flags: Alex's scan's watchlist
-// (`COMPANIES`) is today's ~40 large caps/ETFs, so backtesting against
+// (`COMPANIES`) is today's ~76 large caps/ETFs, so backtesting against
 // only those names — no matter how deep the price history is — silently
 // excludes every stock that would have been in scope back then but later
 // got delisted, acquired, or went to zero. A scan actually running live in
