@@ -10,7 +10,8 @@ function pct(n: number): string {
   return Number.isFinite(n) ? `${(n * 100).toFixed(2)}%` : "n/a";
 }
 
-export function printGradeTable(byHorizon: Record<number, Record<string, BucketStat>>): void {
+export function printGradeTable(byHorizon: Record<number, Record<string, BucketStat>>, title?: string): void {
+  if (title) console.log(`\n### ${title} ###`);
   for (const horizon of Object.keys(byHorizon).map(Number).sort((a, b) => a - b)) {
     const buckets = byHorizon[horizon];
     console.log(`\n── ${horizon}-trading-day forward return, by grade ──`);
@@ -41,7 +42,8 @@ export function printGradeTable(byHorizon: Record<number, Record<string, BucketS
   );
 }
 
-export function printDecileTable(byHorizon: Record<number, Record<number, BucketStat>>): void {
+export function printDecileTable(byHorizon: Record<number, Record<number, BucketStat>>, title?: string): void {
+  if (title) console.log(`\n### ${title} ###`);
   for (const horizon of Object.keys(byHorizon).map(Number).sort((a, b) => a - b)) {
     const buckets = byHorizon[horizon];
     console.log(`\n── ${horizon}-trading-day forward return, by score decile (monotonicity check) ──`);
@@ -56,6 +58,27 @@ export function printDecileTable(byHorizon: Record<number, Record<number, Bucket
           pct(b.meanReturn).padStart(9),
           pct(b.winRate).padStart(8),
         ].join("  ")
+      );
+    }
+  }
+}
+
+// Generic printer for bucketBySector/bucketByCapTier output — arbitrary
+// string-keyed groups rather than the fixed grade/decile orders above, so
+// this sorts by sample size descending (the groups with enough data to
+// mean anything come first) rather than assuming a known label order.
+export function printMetaTable(
+  byHorizon: Record<number, Record<string, BucketStat>>,
+  heading: string
+): void {
+  for (const horizon of Object.keys(byHorizon).map(Number).sort((a, b) => a - b)) {
+    const buckets = byHorizon[horizon];
+    console.log(`\n── ${horizon}-trading-day forward return, by ${heading} ──`);
+    console.log(["Group".padEnd(24), "n".padStart(6), "mean".padStart(9), "win%".padStart(8)].join("  "));
+    const rows = Object.values(buckets).sort((a, b) => b.n - a.n);
+    for (const b of rows) {
+      console.log(
+        [b.label.padEnd(24), String(b.n).padStart(6), pct(b.meanReturn).padStart(9), pct(b.winRate).padStart(8)].join("  ")
       );
     }
   }

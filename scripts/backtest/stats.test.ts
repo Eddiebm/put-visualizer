@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { summarize, bucketByGrade, bucketByScoreDecile } from "./stats";
+import { summarize, bucketByGrade, bucketByScoreDecile, bucketBySector, bucketByCapTier, splitByDate, type TickerMeta } from "./stats";
 import type { WalkForwardSample } from "./engine";
 
 function sample(overrides: Partial<WalkForwardSample> = {}): WalkForwardSample {
@@ -83,5 +83,64 @@ describe("bucketByScoreDecile", () => {
     expect(buckets[0].n).toBe(1);
     expect(buckets[9].n).toBe(2);
     expect(buckets[10]).toBeUndefined();
+  });
+});
+
+const META: Map<string, TickerMeta> = new Map([
+  ["AAPL", { sector: "Technology", capTier: "mega" }],
+  ["MSFT", { sector: "Technology", capTier: "mega" }],
+  ["JPM", { sector: "Financials", capTier: "mega" }],
+]);
+
+describe("bucketBySector", () => {
+  it("groups samples by each ticker's sector via the metadata map", () => {
+    const samples: WalkForwardSample[] = [
+      sample({ sym: "AAPL", forwardReturns: { 5: 0.02 } }),
+      sample({ sym: "MSFT", forwardReturns: { 5: 0.04 } }),
+      sample({ sym: "JPM", forwardReturns: { 5: -0.01 } }),
+    ];
+    const buckets = bucketBySector(samples, 5, META);
+    expect(buckets["Technology"].n).toBe(2);
+    expect(buckets["Technology"].meanReturn).toBeCloseTo(0.03, 10);
+    expect(buckets["Financials"].n).toBe(1);
+  });
+
+  it("buckets a ticker missing from the metadata map under 'Unknown' rather than dropping it", () => {
+    const samples: WalkForwardSample[] = [sample({ sym: "ZZZZ", forwardReturns: { 5: 0.02 } })];
+    const buckets = bucketBySector(samples, 5, META);
+    expect(buckets["Unknown"].n).toBe(1);
+  });
+});
+
+describe("bucketByCapTier", () => {
+  it("groups by capTier, independent of sector", () => {
+    const samples: WalkForwardSample[] = [
+      sample({ sym: "AAPL", forwardReturns: { 5: 0.02 } }),
+      sample({ sym: "MSFT", forwardReturns: { 5: 0.04 } }),
+      sample({ sym: "JPM", forwardReturns: { 5: 0.06 } }),
+    ];
+    const buckets = bucketByCapTier(samples, 5, META);
+    expect(buckets["mega"].n).toBe(3); // all three are "mega" here regardless of differing sectors
+  });
+});
+
+describe("splitByDate", () => {
+  it("splits samples into before/onOrAfter the given ISO date, inclusive on the later side", () => {
+    const samples: WalkForwardSample[] = [
+      sample({ asOfDate: "2020-01-01T00:00:00Z" }),
+      sample({ asOfDate: "2021-06-01T00:00:00Z" }),
+      sample({ asOfDate: "2021-06-01T12:00:00Z" }), // same calendar day as the split, later time — still "onOrAfter"
+      sample({ asOfDate: "2022-01-01T00:00:00Z" }),
+    ];
+    const { before, onOrAfter } = splitByDate(samples, "2021-06-01");
+    expect(before).toHaveLength(1);
+    expect(onOrAfter).toHaveLength(3);
+  });
+
+  it("returns all samples in 'before' when the split date is after every sample", () => {
+    const samples: WalkForwardSample[] = [sample({ asOfDate: "2020-01-01T00:00:00Z" })];
+    const { before, onOrAfter } = splitByDate(samples, "2030-01-01");
+    expect(before).toHaveLength(1);
+    expect(onOrAfter).toHaveLength(0);
   });
 });

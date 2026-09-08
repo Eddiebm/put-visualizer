@@ -78,3 +78,74 @@ export function bucketByScoreDecile(
   for (const [decile, returns] of groups) out[decile] = summarize(`decile ${decile}`, returns);
   return out;
 }
+
+// Per-ticker metadata used only for stratifying results after the fact
+// (sector, rough market-cap tier) — never fed into analyzeStock() itself,
+// so it can't influence the score being tested. Hand-classified, approximate
+// as of this app's own snapshot data (see appConstants.ts's own disclaimer)
+// — good enough for "does the effect look different in tech vs financials,"
+// not a claim of precise or current market caps.
+export interface TickerMeta {
+  sector: string;
+  capTier: string;
+}
+
+function bucketByMetaField(
+  samples: WalkForwardSample[],
+  horizon: number,
+  meta: Map<string, TickerMeta>,
+  field: keyof TickerMeta
+): Record<string, BucketStat> {
+  const groups = new Map<string, number[]>();
+  for (const s of samples) {
+    const r = s.forwardReturns[horizon];
+    if (r == null) continue;
+    const key = meta.get(s.sym)?.[field] ?? "Unknown";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(r);
+  }
+  const out: Record<string, BucketStat> = {};
+  for (const [key, returns] of groups) out[key] = summarize(key, returns);
+  return out;
+}
+
+// Is the (lack of an) effect uniform across sectors, or concentrated/absent
+// in particular ones? A ticker missing from `meta` buckets under "Unknown"
+// rather than being silently dropped, so a stale metadata table shows up as
+// a visible bucket instead of quietly shrinking the sample.
+export function bucketBySector(
+  samples: WalkForwardSample[],
+  horizon: number,
+  meta: Map<string, TickerMeta>
+): Record<string, BucketStat> {
+  return bucketByMetaField(samples, horizon, meta, "sector");
+}
+
+// Same question, by rough market-cap tier — does a mega-cap-only watchlist
+// hide an effect (or a lack of one) that shows up differently in smaller,
+// less efficiently-priced names?
+export function bucketByCapTier(
+  samples: WalkForwardSample[],
+  horizon: number,
+  meta: Map<string, TickerMeta>
+): Record<string, BucketStat> {
+  return bucketByMetaField(samples, horizon, meta, "capTier");
+}
+
+// Splits samples chronologically at `splitDateIso` (inclusive on the "on or
+// after" side) — the fit/test-period check: does whatever pattern (or lack
+// of one) shows up in the pooled data hold up separately in an earlier era
+// and a later one, or does it only exist when the two are blended together?
+// Pure string comparison on ISO dates — no Date parsing needed since
+// WalkForwardSample.asOfDate is already an ISO string.
+export function splitByDate(
+  samples: WalkForwardSample[],
+  splitDateIso: string
+): { before: WalkForwardSample[]; onOrAfter: WalkForwardSample[] } {
+  const before: WalkForwardSample[] = [];
+  const onOrAfter: WalkForwardSample[] = [];
+  for (const s of samples) {
+    (s.asOfDate < splitDateIso ? before : onOrAfter).push(s);
+  }
+  return { before, onOrAfter };
+}

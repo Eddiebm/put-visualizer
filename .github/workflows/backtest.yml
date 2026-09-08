@@ -28,6 +28,20 @@ on:
         description: "Evaluate every Nth eligible day"
         required: false
         default: "5"
+      split_date:
+        description: "Fit/test split date, YYYY-MM-DD (blank = one pooled report)"
+        required: false
+        default: ""
+      sector_breakdown:
+        description: "Also break results out by sector"
+        type: boolean
+        required: false
+        default: false
+      cap_breakdown:
+        description: "Also break results out by market-cap tier"
+        type: boolean
+        required: false
+        default: false
 
 jobs:
   backtest:
@@ -49,6 +63,15 @@ jobs:
           ARGS="--source=tiingo --years=${{ inputs.years }} --horizons=${{ inputs.horizons }} --stride=${{ inputs.stride }}"
           if [ -n "${{ inputs.tickers }}" ]; then
             ARGS="$ARGS --tickers=${{ inputs.tickers }}"
+          fi
+          if [ -n "${{ inputs.split_date }}" ]; then
+            ARGS="$ARGS --split-date=${{ inputs.split_date }}"
+          fi
+          if [ "${{ inputs.sector_breakdown }}" = "true" ]; then
+            ARGS="$ARGS --sector-breakdown"
+          fi
+          if [ "${{ inputs.cap_breakdown }}" = "true" ]; then
+            ARGS="$ARGS --cap-breakdown"
           fi
           npm run backtest:alex -- $ARGS
       - name: Upload full results JSON

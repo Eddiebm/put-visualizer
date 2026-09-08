@@ -610,11 +610,69 @@ aggregation, grouping closed trades by ISO week).
     `position: fixed` corner widget where a new toggle row could plausibly have overlapped
     something.
 
-**Still open:** actually running the backtest below against live data — the harness is
-built and tested, but validating anything needs a real deployment's market-data keys,
-not something that can be done from a sandbox with no credentials.
+28. Ran the backtest for real — 10 years, Tiingo, all 41 `COMPANIES` tickers, 17,490
+    samples. See **Results** below in the "Backtesting Alex's scan" section: the scoring
+    does not show a reliable edge. Also added an on-demand GitHub Actions workflow
+    (`.github/workflows/backtest.yml`) that runs the backtest on GitHub's own runners,
+    reading the Tiingo key from a repository secret rather than a workflow input — this
+    repo is public, and a plain `workflow_dispatch` input value is visible in that run's
+    summary to anyone, forever, whereas a repo secret never is.
+29. Added three more lenses on the same backtest data, none needing a new fetch:
+    `--split-date=YYYY-MM-DD` reports the grade/decile tables separately for samples
+    before vs. on/after a date (`stats.ts`'s `splitByDate`) — the fit/test-period check: a
+    pattern that only appears when two eras are pooled together is weaker evidence than
+    one that holds in each era on its own. `--sector-breakdown` and `--cap-breakdown`
+    (`tickerMeta.ts`, hand-classified sector/market-cap-tier per ticker, checked by a test
+    against `COMPANIES` so it can't silently go stale) slice the same samples by sector and
+    by rough cap tier. None of this touches `analyzeStock()` or influences the score being
+    tested — purely after-the-fact stratification. 11 new tests.
 
 ## Backtesting Alex's scan (`scripts/backtest/`)
+
+### Results (2026-09-08 run: Tiingo, 10 years, all 41 tickers, 17,490 samples)
+
+**The scoring does not show a reliable edge.** "Strong setup" was supposed to beat
+"Avoid" — it doesn't hold up:
+
+| Horizon | Strong setup | Watch | Avoid |
+|---|---|---|---|
+| 5-day  | 0.19% (n=878) | 0.50% | 0.40% |
+| 10-day | 0.98% | 0.93% | 0.84% |
+| 20-day | 2.15% | 1.57% | 1.81% |
+
+At 5 days the ranking is inverted — Strong underperforms both Watch and Avoid. At 10 days
+it's a statistical wash. Only at 20 days does the ordering look right. A real signal
+should hold consistently across three overlapping, correlated horizons like these, not
+flip sign. Win rates sit in a tight 53–59% band across every grade — including Avoid —
+which looks more like "the market went up most of this decade" than a stock-specific
+edge. The one encouraging number (the top score decile, 90–99, led at every horizon)
+doesn't survive scrutiny either: it's 193 of 17,490 samples (1.1%), and the decile right
+below it (80–89) is negative at 5 days — a real tail effect should degrade smoothly into
+its neighbor, not crater next door.
+
+**Conclusion:** as currently weighted, Alex's scan's scoring shows no reliable edge over
+this sample. That doesn't necessarily indict the underlying ideas (trend, pullback,
+relative strength, RSI) — the weights were hand-ported from `stock-coach` and never fit to
+data, so this could be a calibration problem rather than a conceptual one (see **Next
+steps** below). But right now the app shows a confident, color-coded "Strong setup" grade
+this backtest cannot back up. This result has not yet been reflected inside the app itself
+(no in-app disclosure has been added) — that's a deliberate, separate decision, not an
+oversight.
+
+**Next steps, in order of how much they'd actually tell us:**
+1. **Fit/test split** — the weights were hand-guessed, never fit to data at all. Refit
+   thresholds on an early period, test purely on a later one never touched during fitting
+   (`--split-date` now supports checking the *existing* fixed weights across two eras;
+   an actual refit would need a parameterized variant of `analyzeStock`, kept separate
+   from the production function so backtesting it never risks drifting from what ships).
+2. **Cross-sectional relative-strength scoring** — absolute-level technicals (RSI between
+   45–60, etc.) are among the weaker-supported edges in the literature; ranking stocks
+   against each other each day has more historical support.
+3. **Earnings blackout** — needs a historical earnings-date source; Tiingo's free tier
+   doesn't include one. Unresolved pending a data-source decision.
+4. **Wider universe** — S&P 500 (~500 names) rather than 41 mega-caps/ETFs, both for
+   statistical power and to check the sector/cap-tier breakdown (`--sector-breakdown`,
+   `--cap-breakdown`) on a real spread of names instead of an all-mega-cap sample.
 
 Alex's scan's scoring weights (`src/lib/technicals.ts`, ported as-is from `stock-coach`)
 have never been validated against real historical outcomes — the app has always just
@@ -643,7 +701,15 @@ npm run backtest:alex -- --source=norgate --norgate-dir=./norgate-export
 npm run backtest:alex -- --source=norgate --norgate-dir=./norgate-export --universe=./sp500-constituents.csv
 npm run backtest:alex -- --years=5 --horizons=5,10,20 --stride=5
 npm run backtest:alex -- --tickers=AAPL,MSFT,NVDA --out=my-run.json
+
+# Fit/test split and extra breakdowns — see "Results" above for why:
+npm run backtest:alex -- --source=tiingo --years=10 --split-date=2021-01-01
+npm run backtest:alex -- --source=tiingo --years=10 --sector-breakdown --cap-breakdown
 ```
+
+Or trigger `.github/workflows/backtest.yml` from the Actions tab (needs a `TIINGO_API_KEY`
+repository secret set first) — same flags, exposed as workflow inputs, running on GitHub's
+own runners rather than wherever you'd otherwise run this from.
 
 **Three sources, `--source=alpaca|tiingo|norgate` (default `alpaca`):**
 

@@ -29,6 +29,17 @@
 // --norgate-columns. Getting delisted names' actual *price* data still
 // generally requires --source=norgate — Alpaca/Tiingo don't carry it.
 //
+// --split-date=YYYY-MM-DD — the fit/test-period check: reports the grade
+// and decile tables separately for samples before vs. on-or-after that
+// date, instead of one pooled report. A pattern (or the lack of one) that
+// only shows up when both eras are blended together is a much weaker
+// finding than one that holds in each era on its own.
+//
+// --sector-breakdown / --cap-breakdown — additional views on the SAME
+// samples (see tickerMeta.ts), not a new fetch: does the effect differ by
+// sector, or between mega-caps and smaller names? Off by default since
+// they add real console output; turn on what you want to look at.
+//
 // See README.md's "Backtesting Alex's scan" section for the full
 // comparison and what does/doesn't fix survivorship bias.
 //
@@ -39,6 +50,7 @@
 //   npm run backtest:alex -- --source=tiingo --years=10
 //   npm run backtest:alex -- --source=norgate --norgate-dir=./norgate-export
 //   npm run backtest:alex -- --source=norgate --norgate-dir=./norgate-export --universe=./sp500-constituents.csv
+//   npm run backtest:alex -- --split-date=2021-01-01 --sector-breakdown --cap-breakdown
 //   npm run backtest:alex -- --tickers=AAPL,MSFT,NVDA --out=my-run.json
 
 import { writeFileSync } from "node:fs";
@@ -62,8 +74,9 @@ import {
 } from "./universe";
 import { generateSyntheticBars } from "./syntheticData";
 import { walkForward, type WalkForwardSample } from "./engine";
-import { bucketByGrade, bucketByScoreDecile, type BucketStat } from "./stats";
-import { printGradeTable, printDecileTable } from "./report";
+import { bucketByGrade, bucketByScoreDecile, bucketBySector, bucketByCapTier, splitByDate, type BucketStat } from "./stats";
+import { TICKER_META } from "./tickerMeta";
+import { printGradeTable, printDecileTable, printMetaTable } from "./report";
 
 type Source = "alpaca" | "tiingo" | "norgate";
 
@@ -81,6 +94,9 @@ interface Args {
   norgateColumns?: NorgateColumnMap;
   universe?: string;
   universeColumns?: UniverseColumnMap;
+  splitDate?: string;
+  sectorBreakdown: boolean;
+  capBreakdown: boolean;
 }
 
 // Overrides only the fields present in `arg` ("field:header,field:header"),
@@ -139,6 +155,9 @@ function parseArgs(argv: string[]): Args {
     norgateColumns: norgateColumnsArg ? parseNorgateColumnOverrides(norgateColumnsArg) : undefined,
     universe: get("universe"),
     universeColumns: universeColumnsArg ? parseUniverseColumnOverrides(universeColumnsArg) : undefined,
+    splitDate: get("split-date"),
+    sectorBreakdown: argv.includes("--sector-breakdown"),
+    capBreakdown: argv.includes("--cap-breakdown"),
   };
 }
 
@@ -192,6 +211,38 @@ function checkCredentials(args: Args): void {
 function fail(message: string): never {
   console.error(`${message}\nRun with --dry-run first to sanity-check the harness with synthetic data,\nno credentials required.`);
   process.exit(1);
+}
+
+interface Report {
+  sampleCount: number;
+  byGrade: Record<number, Record<string, BucketStat>>;
+  byDecile: Record<number, Record<number, BucketStat>>;
+  bySector?: Record<number, Record<string, BucketStat>>;
+  byCapTier?: Record<number, Record<string, BucketStat>>;
+}
+
+// Builds every requested bucketing over one sample set and prints it —
+// shared by the pooled (no --split-date) and per-period (--split-date)
+// paths below so they can't drift out of sync with each other.
+function buildAndPrintReport(samples: WalkForwardSample[], args: Args, title?: string): Report {
+  const byGrade: Report["byGrade"] = {};
+  const byDecile: Report["byDecile"] = {};
+  const bySector: Report["bySector"] = args.sectorBreakdown ? {} : undefined;
+  const byCapTier: Report["byCapTier"] = args.capBreakdown ? {} : undefined;
+  for (const h of args.horizons) {
+    byGrade[h] = bucketByGrade(samples, h);
+    byDecile[h] = bucketByScoreDecile(samples, h);
+    if (bySector) bySector[h] = bucketBySector(samples, h, TICKER_META);
+    if (byCapTier) byCapTier[h] = bucketByCapTier(samples, h, TICKER_META);
+  }
+
+  if (title) console.log(`\n========== ${title} (${samples.length} samples) ==========`);
+  printGradeTable(byGrade);
+  printDecileTable(byDecile);
+  if (bySector) printMetaTable(bySector, "sector");
+  if (byCapTier) printMetaTable(byCapTier, "cap tier");
+
+  return { sampleCount: samples.length, byGrade, byDecile, bySector, byCapTier };
 }
 
 async function main() {
@@ -253,23 +304,20 @@ async function main() {
     process.exit(1);
   }
 
-  const byGrade: Record<number, Record<string, BucketStat>> = {};
-  const byDecile: Record<number, Record<number, BucketStat>> = {};
-  for (const h of args.horizons) {
-    byGrade[h] = bucketByGrade(allSamples, h);
-    byDecile[h] = bucketByScoreDecile(allSamples, h);
+  let output: { report: Report } | { before: Report; onOrAfter: Report };
+  if (args.splitDate) {
+    const { before, onOrAfter } = splitByDate(allSamples, args.splitDate);
+    console.log(`\nSplitting at ${args.splitDate}: ${before.length} samples before, ${onOrAfter.length} on/after.`);
+    const beforeReport = buildAndPrintReport(before, args, `Before ${args.splitDate} (fit period)`);
+    const onOrAfterReport = buildAndPrintReport(onOrAfter, args, `On/after ${args.splitDate} (test period)`);
+    output = { before: beforeReport, onOrAfter: onOrAfterReport };
+  } else {
+    output = { report: buildAndPrintReport(allSamples, args) };
   }
-
-  printGradeTable(byGrade);
-  printDecileTable(byDecile);
 
   writeFileSync(
     args.out,
-    JSON.stringify(
-      { args: { ...args }, tickers, generatedAt: new Date().toISOString(), byGrade, byDecile, sampleCount: allSamples.length },
-      null,
-      2
-    )
+    JSON.stringify({ args: { ...args }, tickers, generatedAt: new Date().toISOString(), ...output }, null, 2)
   );
   console.log(`\nFull results written to ${args.out}`);
 }
