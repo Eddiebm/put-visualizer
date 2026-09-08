@@ -358,7 +358,7 @@ tree is TypeScript now (`strict: true`) — see **Since then** below.
 ## Running the tests and linter
 
 ```bash
-npm test          # Vitest — 462 tests: every pure module in src/lib/, every api/*.ts
+npm test          # Vitest — 482 tests: every pure module in src/lib/, every api/*.ts
                   # Edge function, every component in src/components/ (RTL),
                   # App.tsx's own orchestration (tabs, sync, tour, journal, Tasty),
                   # and the Alex's-scan backtest harness (scripts/backtest/)
@@ -733,6 +733,14 @@ aggregation, grouping closed trades by ISO week).
     math can safely support, instead of letting it silently regress into live 429s.
     Verified visually (Alex's scan and Today's picks both render cleanly at the new count,
     no console errors beyond the expected missing-API-route 404 in this sandbox).
+35. Built the suitability-gate redesign scoped in **Next steps** #4 below — see that entry
+    for the full description. In short: `src/lib/suitability.ts` is now the only thing in
+    this app allowed to say "pick"/"don't pick," built entirely from facts (afford it, no
+    earnings, `richness` fair-or-rich, a person-confirmed worst-case acceptance), never the
+    score. Wired into Today's picks as the primary verdict; Alex's scan and Holdings gained
+    an in-app `BacktestDisclosure` banner stating their actual backtest result in place,
+    not just in this README. 20 new tests. Verified visually (Playwright against the real
+    dev server) that the disclosure banners render correctly on Alex's scan and Holdings.
 
 ## Backtesting this app's buy/sell signals (`scripts/backtest/`)
 
@@ -838,16 +846,22 @@ on any future run.
    `spearmanCorrelation`/`scoreForwardReturnSpearman` and `bucketByYear` (`stats.ts`), and
    the modeled CSP overlay (`cspOverlay.ts`, `--csp-overlay`) are now part of this harness
    rather than a one-off script — every future run gets this level of rigor automatically.
-4. **Redesign what "pick" and "don't pick" mean.** The backtests above rule out "this name
-   will outperform" as something any of the three signals can defend. What they don't rule
-   out is a suitability gate: would you accept owning the shares at this strike, does the
-   position fit the account, is there a known event (earnings) in the window, and is the
-   market paying fairly for the move this stock has actually been making (`richness`
-   already computed live vs. realized). That's a checklist against facts already available
-   today, not a forecast — and it's the only kind of "pick"/"don't pick" this backtest
-   evidence still supports. Practically: drop Alex's Strong/Avoid and Holdings' buy/wait as
-   pickers (they sort candles, not outcomes — label them informational, not decisions), and
-   gate "Today's picks" on affordability + no earnings + `richness` fair-or-rich instead.
+4. ~~**Redesign what "pick" and "don't pick" mean.**~~ — done: `src/lib/suitability.ts`'s
+   `suitabilityVerdict()` is now the only thing in this app allowed to say "pick" or "don't
+   pick," built from exactly the facts this backtest evidence still supports — canAfford,
+   no earnings before expiration, `richness` fair-or-rich vs. realized vol, and an explicit
+   person-confirmed "you accept this trade's real worst case" (never inferred, never
+   defaulted — see the module's own docstring for why). Deliberately does NOT use win rate,
+   POP, annualized yield, cushion, or any of the three signals' own score/grade — those
+   are exactly the ingredients this backtest showed don't predict anything. Wired into
+   Today's picks as the primary verdict badge (replacing the giant score as the headline;
+   the score still shows, demoted and labeled "tape"), with a required worst-case
+   checkbox before a card can ever read "Pick." Alex's scan and Holdings keep their
+   existing scores/verdicts as informational context but now carry an in-app
+   `BacktestDisclosure` banner (`shared.tsx`) stating the actual backtest finding in plain
+   English, in the exact place the score is shown — not a README-only confession. 20 new
+   tests (`suitability.test.ts`, `TodayView.test.tsx`, `AlexScan.test.tsx`,
+   `Holdings.test.tsx`, `shared.test.tsx`).
 5. **Cross-sectional relative-strength scoring** — absolute-level technicals (RSI between
    45–60, etc.) are among the weaker-supported edges in the literature; ranking stocks
    against each other each day has more historical support. Lower priority than #4: a

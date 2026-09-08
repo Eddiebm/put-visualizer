@@ -26,7 +26,7 @@ describe("TodayView", () => {
 
 const SAMPLE_PICK: OpportunityPick = {
   sym: "AAPL", name: "Apple Inc.", price: 190, strike: 185, premium: 2.5, iv: 0.28, rvol: 0.25, dte: 30,
-  richness: { tag: "fair", emoji: "⚖️", headline: "fairly priced", detail: "" },
+  richness: { tag: "fair", emoji: "⚖️", headline: "fairly priced", detail: "" }, richnessTag: "fair",
   pop: 0.7, cushion: 1.2, annYield: 18, score: 62, grade: { label: "Good", color: "#16a34a", bg: "#f0fdf4" },
   sw: 5, longStrikeVal: 180, netCredit: 1.5, collateral: 500, maxLoss: 350, canAfford: true, contracts: 1,
   capitalPct: 0.15, maxLossPct: 0.1, hasEarnings: false, earn: 150, lose: 350, collateralUsed: 500, available: true,
@@ -40,5 +40,47 @@ describe("OpportunityCard", () => {
     render(<OpportunityCard pick={SAMPLE_PICK} capital={30000} onLoad={() => {}} onViewChart={onViewChart} />);
     await user.click(screen.getByText("🕯️ View chart"));
     expect(onViewChart).toHaveBeenCalledWith("AAPL");
+  });
+
+  it("shows 'Confirm to see' rather than a bare score/grade until the worst-case checkbox is checked, even though every fact passes", () => {
+    render(<OpportunityCard pick={SAMPLE_PICK} capital={30000} onLoad={() => {}} onViewChart={() => {}} />);
+    expect(screen.getByText("❓ Confirm to see")).toBeInTheDocument();
+    expect(screen.queryByText("✅ Pick")).not.toBeInTheDocument();
+    // The score still shows, but demoted and explicitly labeled "tape".
+    expect(screen.getByText(/tape: 62 · Good/)).toBeInTheDocument();
+  });
+
+  it("flips to 'Pick' once the worst-case checkbox is checked, with every other fact already passing", async () => {
+    const user = userEvent.setup();
+    render(<OpportunityCard pick={SAMPLE_PICK} capital={30000} onLoad={() => {}} onViewChart={() => {}} />);
+    await user.click(screen.getByRole("checkbox"));
+    expect(screen.getByText("✅ Pick")).toBeInTheDocument();
+  });
+
+  it("shows 'Don't pick' when the person explicitly declines the worst case, not just 'Confirm to see'", async () => {
+    const user = userEvent.setup();
+    render(<OpportunityCard pick={SAMPLE_PICK} capital={30000} onLoad={() => {}} onViewChart={() => {}} />);
+    await user.click(screen.getByText("No, I wouldn't"));
+    expect(screen.getByText("🚫 Don't pick")).toBeInTheDocument();
+  });
+
+  it("shows 'Don't pick' when the trade can't be afforded, even with the checkbox checked", async () => {
+    const user = userEvent.setup();
+    render(<OpportunityCard pick={{ ...SAMPLE_PICK, canAfford: false }} capital={30000} onLoad={() => {}} onViewChart={() => {}} />);
+    await user.click(screen.getByRole("checkbox"));
+    expect(screen.getByText("🚫 Don't pick")).toBeInTheDocument();
+  });
+
+  it("shows the backtest disclosure banner alongside the tape score", () => {
+    render(<OpportunityCard pick={SAMPLE_PICK} capital={30000} onLoad={() => {}} onViewChart={() => {}} />);
+    expect(screen.getByText(/Backtested, not proven/)).toBeInTheDocument();
+  });
+
+  it("relabels the CTA to 'See the trade anyway' rather than 'Show Me The Trade' once the verdict is a hard don't-pick", async () => {
+    const user = userEvent.setup();
+    render(<OpportunityCard pick={{ ...SAMPLE_PICK, canAfford: false }} capital={30000} onLoad={() => {}} onViewChart={() => {}} />);
+    await user.click(screen.getByRole("checkbox"));
+    expect(screen.getByText("See the trade anyway →")).toBeInTheDocument();
+    expect(screen.queryByText("Show Me The Trade →")).not.toBeInTheDocument();
   });
 });

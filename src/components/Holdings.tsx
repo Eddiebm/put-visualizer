@@ -5,6 +5,7 @@ import {
   type Holding, type Verdict, type RuleVerdict, type EntryVerdict, type EntryRead,
 } from "../lib/holdings";
 import type { Bar } from "../types";
+import { BacktestDisclosure } from "./shared";
 
 // ─── Holdings — shares you already own (and shares you might buy) ─────────
 // Every other tab in this app is about selling options. This is the one
@@ -312,11 +313,15 @@ export function Holdings({ onViewChart }: HoldingsProps) {
           </button>
         )}
       </div>
-      <div style={{ fontSize: 13, color: "#64748b", marginBottom: 18, maxWidth: 640 }}>
+      <div style={{ fontSize: 13, color: "#64748b", marginBottom: 12, maxWidth: 640 }}>
         Shares you already own — tracked separately from the options positions above. Three independent
         reads per position: your own target rule, a plain technical read, and what happens when they
         agree or don't. None of this places an order, and none of it is a guarantee — a % target is a
         number you chose, not a law of markets, and a technical read can be wrong.
+      </div>
+
+      <div style={{ marginBottom: 18, maxWidth: 640 }}>
+        <BacktestDisclosure finding="both technical reads have been walk-forward tested against 10 years of real data (17,490 samples each). The buy signal is, if anything, backwards — wait/avoid beat buy at every horizon tested. The sell signal isn't followed by worse outcomes than hold. Treat both as informational (tape), not a pick." />
       </div>
 
       <TickerCheck onAdd={prefillFromCheck} onViewChart={onViewChart} />

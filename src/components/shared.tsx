@@ -44,6 +44,33 @@ export function ExplainCheckItem({ check, accent, icon, text }: ExplainCheckItem
   );
 }
 
+// ─── Backtest disclosure ───────────────────────────────────────────────────
+// This app has three technical/quantitative recommendation systems (Alex's
+// scan, Holdings' buy signal, Holdings' sell signal) plus the options
+// scoring feeding Today's picks. All were walk-forward backtested against
+// real historical data (see README's "Backtesting this app's buy/sell
+// signals") — none showed a reliable edge. This banner says exactly that,
+// in the specific place each signal actually shows up, instead of leaving
+// it a README-only confession nobody reading the live app would ever see.
+
+interface BacktestDisclosureProps {
+  finding: string; // the specific, plain-English result for the signal shown on this screen
+}
+
+export function BacktestDisclosure({ finding }: BacktestDisclosureProps) {
+  return (
+    <div
+      role="note"
+      style={{
+        fontSize: 12.5, color: "#92400e", background: "#fffbeb", border: "1px solid #fde68a",
+        borderRadius: 10, padding: "10px 14px", lineHeight: 1.55,
+      }}
+    >
+      <strong>⚠ Backtested, not proven —</strong> {finding}
+    </div>
+  );
+}
+
 interface StatProps {
   label: string;
   value: string | number;

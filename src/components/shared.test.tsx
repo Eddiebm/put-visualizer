@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Stat, ExplainCheckItem } from "./shared";
+import { Stat, ExplainCheckItem, BacktestDisclosure } from "./shared";
 
 describe("Stat", () => {
   it("renders the label and value", () => {
@@ -39,5 +39,13 @@ describe("ExplainCheckItem", () => {
 
     await user.click(screen.getByText("Less"));
     expect(screen.queryByText("Here's why this matters.")).not.toBeInTheDocument();
+  });
+});
+
+describe("BacktestDisclosure", () => {
+  it("renders the fixed prefix alongside the caller-supplied finding", () => {
+    render(<BacktestDisclosure finding="this specific claim has no edge." />);
+    expect(screen.getByText(/Backtested, not proven/)).toBeInTheDocument();
+    expect(screen.getByText(/this specific claim has no edge\./)).toBeInTheDocument();
   });
 });

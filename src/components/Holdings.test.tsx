@@ -23,6 +23,12 @@ describe("Holdings — empty state", () => {
     render(<Holdings onViewChart={() => {}} />);
     expect(screen.getByText("No holdings tracked yet")).toBeInTheDocument();
   });
+
+  it("shows the backtest disclosure for both the entry and exit signals", () => {
+    render(<Holdings onViewChart={() => {}} />);
+    expect(screen.getByText(/Backtested, not proven/)).toBeInTheDocument();
+    expect(screen.getByText(/wait\/avoid beat buy at every horizon/)).toBeInTheDocument();
+  });
 });
 
 describe("Holdings — adding a position", () => {

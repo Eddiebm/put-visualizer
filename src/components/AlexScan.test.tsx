@@ -26,6 +26,12 @@ describe("AlexScan", () => {
     await waitFor(() => expect(screen.getByText(/No price history came back/)).toBeInTheDocument());
   });
 
+  it("shows the backtest disclosure regardless of scan results", async () => {
+    render(<AlexScan capital={30000} onLoad={() => {}} onViewChart={() => {}} />);
+    await waitFor(() => expect(screen.getByText(/Backtested, not proven/)).toBeInTheDocument());
+    expect(screen.getByText(/does not show a reliable edge/)).toBeInTheDocument();
+  });
+
   it("lets the user re-run the scan", async () => {
     render(<AlexScan capital={30000} onLoad={() => {}} onViewChart={() => {}} />);
     await waitFor(() => screen.getByText("Refresh ↺"));

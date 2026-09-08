@@ -3,12 +3,13 @@ import { bsPrice, bsGreeks, realizedVol as calcRealizedVol } from "../lib/blackS
 import { expectedMove, cushionSigma } from "../lib/probability";
 import { richnessSignal } from "../lib/richness";
 import { opportunityScore, scoreGrade, autopilotChecks, marketCondition as computeMarketCondition } from "../lib/score";
+import { suitabilityVerdict, type SuitabilityVerdict } from "../lib/suitability";
 import { money, money2 } from "../lib/format";
 import { targetExpiration, computeDte } from "../lib/dates";
 import { roundStrike, spreadWidthFor } from "../lib/pnl";
 import { COMPANIES } from "../appConstants";
 import { styles } from "../styles";
-import { ExplainCheckItem } from "./shared";
+import { ExplainCheckItem, BacktestDisclosure } from "./shared";
 import { MorningGates } from "./MorningGates";
 import type { Richness, Grade, MarketCondition } from "../types";
 
@@ -274,6 +275,12 @@ export function TodayView({ capital, onLoadTrade, onPicksReady, onViewChart }: T
   );
 }
 
+const VERDICT_STYLE: Record<SuitabilityVerdict, { label: string; color: string; bg: string }> = {
+  pick: { label: "✅ Pick", color: "#16a34a", bg: "#f0fdf4" },
+  "dont-pick": { label: "🚫 Don't pick", color: "#e14c4c", bg: "#fff5f5" },
+  "manual-check-needed": { label: "❓ Confirm to see", color: "#d97706", bg: "#fffbeb" },
+};
+
 interface OpportunityCardProps {
   pick: OpportunityPick;
   capital: number;
@@ -283,8 +290,9 @@ interface OpportunityCardProps {
 
 export function OpportunityCard({ pick, capital, onLoad, onViewChart }: OpportunityCardProps) {
   const [showAll, setShowAll] = useState(false);
+  const [worstCaseAccepted, setWorstCaseAccepted] = useState<boolean | null>(null);
   const { sym, name, price, strike, sw, longStrikeVal, dte, score, grade,
-          earn, lose, collateralUsed, pop, cushion, richness,
+          earn, lose, collateralUsed, pop, cushion, richness, richnessTag,
           canAfford, capitalPct, maxLossPct, hasEarnings, earningsDate } = pick;
   const popN = pop != null ? Math.round(pop * 100) : null;
 
@@ -295,6 +303,13 @@ export function OpportunityCard({ pick, capital, onLoad, onViewChart }: Opportun
 
   const positives = passing.slice(0, 4);
   const negatives = [...cautious, ...failed].slice(0, 3);
+
+  // The only pick/don't-pick verdict this app stands behind — built from
+  // facts (afford it, no earnings, priced fair-or-rich), not the score
+  // above. See src/lib/suitability.ts for exactly why the score can't be
+  // the verdict.
+  const suitability = suitabilityVerdict({ canAfford, hasEarnings, richnessTag, worstCaseAccepted });
+  const verdictStyle = VERDICT_STYLE[suitability.verdict];
 
   return (
     <div style={{
@@ -323,16 +338,72 @@ export function OpportunityCard({ pick, capital, onLoad, onViewChart }: Opportun
           </button>
         </div>
         <div style={{ textAlign: "right" }}>
-          <div style={{ fontSize: 24, fontWeight: 800, color: grade.color, lineHeight: 1 }}>{score}</div>
-          <div style={{ fontSize: 10, fontWeight: 700, color: grade.color, letterSpacing: "0.05em", textTransform: "uppercase" }}>{grade.label}</div>
+          <div style={{
+            fontSize: 13, fontWeight: 800, color: verdictStyle.color, letterSpacing: "0.04em",
+            textTransform: "uppercase", background: verdictStyle.bg, borderRadius: 6, padding: "3px 9px",
+          }}>
+            {verdictStyle.label}
+          </div>
+          <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 5 }}>
+            tape: {score} · {grade.label}
+          </div>
         </div>
       </div>
 
-      {/* Why I like this trade */}
+      <BacktestDisclosure finding="the score/grade above (Excellent…Avoid) has been walk-forward tested against 10 years of real data and does not reliably predict which trades do better — treat it as a summary of the trade's shape, not a forecast. The PICK/DON'T PICK badge above is a separate, fact-only check (see below), and is the only verdict this app stands behind." />
+
+      {/* The suitability checklist — the actual pick/don't-pick reasoning */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {suitability.checks.map((c) => {
+          const icon = c.pass === true ? "✅" : c.pass === false ? "❌" : "❓";
+          const color = c.pass === true ? "#166534" : c.pass === false ? "#991b1b" : "#92400e";
+          if (c.key === "ownership") {
+            return (
+              <label key={c.key} style={{ display: "flex", gap: 8, fontSize: 12.5, color, cursor: "pointer", alignItems: "flex-start" }}>
+                <input
+                  type="checkbox"
+                  checked={worstCaseAccepted === true}
+                  onChange={(e) => setWorstCaseAccepted(e.target.checked ? true : null)}
+                  style={{ marginTop: 2, flexShrink: 0 }}
+                />
+                <span>
+                  <strong>{c.label}</strong> — {c.detail}
+                  {worstCaseAccepted !== true && (
+                    <>
+                      {" "}
+                      <button
+                        type="button"
+                        onClick={() => setWorstCaseAccepted(false)}
+                        style={{ border: "none", background: "none", color: "#991b1b", fontSize: 11.5, fontWeight: 700, cursor: "pointer", padding: 0, textDecoration: "underline" }}
+                      >
+                        No, I wouldn't
+                      </button>
+                    </>
+                  )}
+                </span>
+              </label>
+            );
+          }
+          return (
+            <div key={c.key} style={{ display: "flex", gap: 8, fontSize: 12.5, color }}>
+              <span style={{ flexShrink: 0 }}>{icon}</span>
+              <span><strong>{c.label}</strong> — {c.detail}</span>
+            </div>
+          );
+        })}
+      </div>
+
+      {(positives.length > 0 || negatives.length > 0) && (
+        <div style={{ fontSize: 10, color: "#cbd5e1", fontWeight: 700, letterSpacing: "0.05em", textTransform: "uppercase", borderTop: "1px dashed #f1f5f9", paddingTop: 10 }}>
+          Additional context (tape, not part of the pick above)
+        </div>
+      )}
+
+      {/* Context: score-derived detail, not the verdict */}
       {positives.length > 0 && (
         <div>
           <div style={{ fontSize: 11, fontWeight: 700, color: "#16a34a", letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 8 }}>
-            Why I like this trade
+            In this trade's favor
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             {positives.map(c => <ExplainCheckItem key={c.key} check={c} accent="#16a34a" icon="✓" text={c.label} />)}
@@ -422,7 +493,7 @@ export function OpportunityCard({ pick, capital, onLoad, onViewChart }: Opportun
         onClick={() => onLoad(pick)}
         style={{ ...styles.tourNext, fontSize: 13, padding: "11px 0", width: "100%" }}
       >
-        Show Me The Trade →
+        {suitability.verdict === "dont-pick" ? "See the trade anyway →" : "Show Me The Trade →"}
       </button>
     </div>
   );

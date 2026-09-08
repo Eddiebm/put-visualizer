@@ -4,7 +4,7 @@ import { targetExpiration } from "../lib/dates";
 import { analyzeStock, stockChecks, technicalMarketCondition } from "../lib/technicals";
 import { COMPANIES } from "../appConstants";
 import { styles } from "../styles";
-import { ExplainCheckItem } from "./shared";
+import { ExplainCheckItem, BacktestDisclosure } from "./shared";
 import type { TechnicalAnalysis, MarketCondition } from "../types";
 
 // ─── Alex's scan — technical stock/ETF screener ───────────────────────────
@@ -116,6 +116,10 @@ export function AlexScan({ capital, onLoad, onViewChart }: AlexScanProps) {
         <button type="button" onClick={runScan} style={{ ...styles.sizingBtn, marginLeft: 0 }}>
           Refresh ↺
         </button>
+      </div>
+
+      <div style={{ marginBottom: 18 }}>
+        <BacktestDisclosure finding='this scan has been walk-forward tested against 10 years of real data (17,490 samples) and does not show a reliable edge — "Strong setup" does not reliably beat "Avoid." Treat the grade/score below as a technical read (tape), not a pick.' />
       </div>
 
       {condition && (
