@@ -3,29 +3,52 @@
 // dataSource.ts; this file only ever sees bars it's handed.
 //
 // The one property this file lives or dies on: at "as of" day i, it must
-// never call analyzeStock() with a bar dated after day i. A backtest that
-// leaks a single future bar into the score it's grading makes every result
-// downstream fiction — the score would "know" things the live app never
+// never call the evaluator with a bar dated after day i. A backtest that
+// leaks a single future bar into the read it's grading makes every result
+// downstream fiction — the read would "know" things the live app never
 // could have known that day. engine.test.ts has a regression test that
-// plants a deliberate future price jump and asserts the score at i is
+// plants a deliberate future price jump and asserts the read at i is
 // unaffected by it.
+//
+// Deliberately generic over WHAT gets evaluated each day (`opts.evaluate`)
+// rather than hardcoded to one function: the app has three independent
+// buy/sell recommendation systems worth checking against real history —
+// Alex's scan (`analyzeStock`, a general buy-timing screener), Holdings'
+// buy signal (`entryVerdict`), and Holdings' sell signal
+// (`technicalVerdict`) — and all three take the same "bars so far" shape.
+// One walk-forward loop, one no-lookahead guarantee, three swappable
+// evaluators (see evaluators.ts) rather than three parallel copies of this
+// same day-stepping logic that could quietly drift apart.
 
-import { analyzeStock } from "../../src/lib/technicals";
 import type { Bar } from "../../src/types";
 
 export interface WalkForwardSample {
   sym: string;
   asOfDate: string; // bar's own date/timestamp, or its index as a fallback
-  score: number;
-  grade: string; // grade.label — the thing the live UI actually shows
+  // Numeric score, when the evaluator has one (Alex's scan's 0-100) — null
+  // for evaluators that only produce a verdict label (Holdings' entry/exit
+  // reads have no numeric score to bucket by decile).
+  score: number | null;
+  grade: string; // the label the live UI actually shows (a Grade.label, or a Verdict/EntryVerdict string)
   // horizon (trading days) -> forward return, or null if the run ended
   // before that horizon (shouldn't happen given the loop's own stopping
   // condition below, but kept nullable rather than assumed).
   forwardReturns: Record<number, number | null>;
 }
 
+export interface EvaluateResult {
+  grade: string;
+  score: number | null;
+}
+
+// Called with bars/spyBars sliced to "everything up to and including day
+// i" — never later. Returning null means "no read for this day" (e.g. not
+// enough trailing history yet) and the day is skipped, not counted as a
+// fake verdict.
+export type Evaluator = (barsSoFar: Bar[], spyBarsSoFar: Bar[]) => EvaluateResult | null;
+
 export interface WalkForwardOptions {
-  capital: number;
+  evaluate: Evaluator; // see evaluators.ts for the three the app actually ships
   horizons: number[]; // e.g. [5, 10, 20] trading days
   stride: number; // evaluate every Nth eligible day — see the module docstring in stats.ts for why this isn't 1
   minLookback: number; // trailing bars required before the first evaluation (200 for a full sma200 read)
@@ -79,20 +102,7 @@ export function walkForward(
       .slice(0, i + 1)
       .filter((b): b is Bar => b != null);
 
-    // hasEarnings is fixed to `false` here rather than looked up — a real
-    // historical earnings calendar isn't wired up yet (see the README note
-    // this script's usage doc points to). This means the backtest can't
-    // validate the earnings-blackout rule (score forced to 0), and any
-    // ticker that actually had earnings inside a sampled window is scored
-    // as if it hadn't — a known, documented gap, not a silent one.
-    const result = analyzeStock({
-      sym,
-      name: sym,
-      bars: barsSoFar,
-      capital: opts.capital,
-      hasEarnings: false,
-      spyBars: spyBarsSoFar,
-    });
+    const result = opts.evaluate(barsSoFar, spyBarsSoFar);
     if (!result) continue;
 
     const forwardReturns: Record<number, number | null> = {};
@@ -105,7 +115,7 @@ export function walkForward(
       sym,
       asOfDate: bars[i].t ?? String(i),
       score: result.score,
-      grade: result.grade.label,
+      grade: result.grade,
       forwardReturns,
     });
   }

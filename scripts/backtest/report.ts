@@ -4,13 +4,21 @@
 
 import type { BucketStat } from "./stats";
 
-const GRADE_ORDER = ["Strong setup", "Good setup", "Watch", "Weak", "Avoid"];
+// One order per signal (see evaluators.ts) — each has its own grade/verdict
+// vocabulary, so there's no single fixed order that works for all three.
+export const ALEX_SCAN_GRADE_ORDER = ["Strong setup", "Good setup", "Watch", "Weak", "Avoid"];
+export const HOLDINGS_ENTRY_GRADE_ORDER = ["buy", "wait", "avoid"];
+export const HOLDINGS_EXIT_GRADE_ORDER = ["sell", "watch", "hold"];
 
 function pct(n: number): string {
   return Number.isFinite(n) ? `${(n * 100).toFixed(2)}%` : "n/a";
 }
 
-export function printGradeTable(byHorizon: Record<number, Record<string, BucketStat>>, title?: string): void {
+export function printGradeTable(
+  byHorizon: Record<number, Record<string, BucketStat>>,
+  order: string[] = ALEX_SCAN_GRADE_ORDER,
+  title?: string
+): void {
   if (title) console.log(`\n### ${title} ###`);
   for (const horizon of Object.keys(byHorizon).map(Number).sort((a, b) => a - b)) {
     const buckets = byHorizon[horizon];
@@ -18,7 +26,7 @@ export function printGradeTable(byHorizon: Record<number, Record<string, BucketS
     console.log(
       ["Grade".padEnd(14), "n".padStart(6), "mean".padStart(9), "median".padStart(9), "win%".padStart(8), "±SE".padStart(9)].join("  ")
     );
-    for (const label of GRADE_ORDER) {
+    for (const label of order) {
       const b = buckets[label];
       if (!b) continue;
       console.log(

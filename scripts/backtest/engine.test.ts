@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { walkForward, alignByDate } from "./engine";
+import { walkForward, alignByDate, type Evaluator } from "./engine";
+import { alexScanEvaluator } from "./evaluators";
 import { analyzeStock } from "../../src/lib/technicals";
 import type { Bar } from "../../src/types";
 
@@ -17,6 +18,12 @@ function makeBars(n: number, opts: { start?: number; jumpAt?: number; jumpTo?: n
   }
   return bars;
 }
+
+// The default evaluator for most tests below — walkForward is generic over
+// "what gets evaluated," but most of these tests are about the walk-forward
+// mechanics (lookahead, stride, horizons, eligibility), not about any one
+// evaluator's own logic, so they all share this one.
+const ALEX = alexScanEvaluator("TEST", 5000);
 
 describe("alignByDate", () => {
   it("matches spy bars to the same calendar date, not by array index", () => {
@@ -37,13 +44,13 @@ describe("walkForward", () => {
     // 300 identical days, then a massive price jump at day 260 onward.
     // Evaluating at i=259 (before the jump) must produce the exact same
     // score as evaluating the same bars.slice(0, 260) directly — if the
-    // walk-forward loop ever handed analyzeStock a longer slice than it
+    // walk-forward loop ever handed the evaluator a longer slice than it
     // should have, this score would reflect the jump and diverge.
     const bars = makeBars(300, { jumpAt: 260, jumpTo: 100000 });
     const spyBars = makeBars(300);
 
     const samples = walkForward("TEST", bars, spyBars, {
-      capital: 5000,
+      evaluate: ALEX,
       horizons: [5],
       stride: 1,
       minLookback: 250,
@@ -76,7 +83,7 @@ describe("walkForward", () => {
     const bars = makeBars(260);
     const spyBars = makeBars(260);
     const samples = walkForward("TEST", bars, spyBars, {
-      capital: 5000,
+      evaluate: ALEX,
       horizons: [5, 10],
       stride: 50,
       minLookback: 250,
@@ -95,7 +102,7 @@ describe("walkForward", () => {
     const bars = makeBars(300);
     const spyBars = makeBars(300);
     const samples = walkForward("TEST", bars, spyBars, {
-      capital: 5000,
+      evaluate: ALEX,
       horizons: [20],
       stride: 1,
       minLookback: 250,
@@ -110,7 +117,7 @@ describe("walkForward", () => {
     const bars = makeBars(260);
     const spyBars = makeBars(260);
     const samples = walkForward("TEST", bars, spyBars, {
-      capital: 5000,
+      evaluate: ALEX,
       horizons: [5],
       stride: 10,
       minLookback: 250,
@@ -123,7 +130,7 @@ describe("walkForward", () => {
 
   it("throws if called with no horizons — a silently-empty report would be worse", () => {
     const bars = makeBars(260);
-    expect(() => walkForward("TEST", bars, bars, { capital: 5000, horizons: [], stride: 1, minLookback: 250 })).toThrow();
+    expect(() => walkForward("TEST", bars, bars, { evaluate: ALEX, horizons: [], stride: 1, minLookback: 250 })).toThrow();
   });
 
   it("skips days isEligible rejects, but doesn't stop the walk — a symbol can be eligible again later", () => {
@@ -134,7 +141,7 @@ describe("walkForward", () => {
     const eligibleStart = bars[260].t as string;
     const eligibleEnd = bars[270].t as string;
     const samples = walkForward("TEST", bars, spyBars, {
-      capital: 5000,
+      evaluate: ALEX,
       horizons: [5],
       stride: 1,
       minLookback: 250,
@@ -149,12 +156,45 @@ describe("walkForward", () => {
   it("produces no samples at all when isEligible rejects every day", () => {
     const bars = makeBars(300);
     const samples = walkForward("TEST", bars, bars, {
-      capital: 5000,
+      evaluate: ALEX,
       horizons: [5],
       stride: 1,
       minLookback: 250,
       isEligible: () => false,
     });
     expect(samples).toEqual([]);
+  });
+
+  it("skips a day the evaluator returns null for, rather than crashing or faking a grade", () => {
+    // A trivial custom evaluator (not analyzeStock) — proves the engine is
+    // genuinely generic, not just happening to work because it's secretly
+    // still calling analyzeStock somewhere.
+    const bars = makeBars(260);
+    let calls = 0;
+    const alternating: Evaluator = () => {
+      calls++;
+      return calls % 2 === 0 ? { grade: "even", score: null } : null;
+    };
+    const samples = walkForward("TEST", bars, bars, {
+      evaluate: alternating,
+      horizons: [5],
+      stride: 1,
+      minLookback: 250,
+    });
+    expect(samples.length).toBeGreaterThan(0);
+    expect(samples.every((s) => s.grade === "even")).toBe(true);
+  });
+
+  it("carries a null score through untouched for an evaluator with no numeric score", () => {
+    const bars = makeBars(260);
+    const noScore: Evaluator = () => ({ grade: "buy", score: null });
+    const samples = walkForward("TEST", bars, bars, {
+      evaluate: noScore,
+      horizons: [5],
+      stride: 50,
+      minLookback: 250,
+    });
+    expect(samples.length).toBeGreaterThan(0);
+    expect(samples.every((s) => s.score === null && s.grade === "buy")).toBe(true);
   });
 });

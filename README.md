@@ -332,7 +332,7 @@ tree is TypeScript now (`strict: true`) — see **Since then** below.
 ## Running the tests and linter
 
 ```bash
-npm test          # Vitest — 403 tests: every pure module in src/lib/, every api/*.ts
+npm test          # Vitest — 419 tests: every pure module in src/lib/, every api/*.ts
                   # Edge function, every component in src/components/ (RTL),
                   # App.tsx's own orchestration (tabs, sync, tour, journal, Tasty),
                   # and the Alex's-scan backtest harness (scripts/backtest/)
@@ -626,10 +626,53 @@ aggregation, grouping closed trades by ISO week).
     against `COMPANIES` so it can't silently go stale) slice the same samples by sector and
     by rough cap tier. None of this touches `analyzeStock()` or influences the score being
     tested — purely after-the-fact stratification. 11 new tests.
+30. Generalized the backtest harness to cover the app's other two buy/sell signals, not
+    just Alex's scan — this app makes three independent recommendations
+    (`analyzeStock`/`entryVerdict`/`technicalVerdict`, see the table in "Backtesting this
+    app's buy/sell signals" below), and only the first had ever been checked against real
+    data. `engine.ts`'s `walkForward` now takes a pluggable `evaluate` function
+    (`WalkForwardOptions.evaluate: Evaluator`) instead of being hardcoded to call
+    `analyzeStock` — one walk-forward loop and one no-lookahead guarantee shared by all
+    three (`evaluators.ts`), rather than three parallel copies of that logic that could
+    quietly drift apart. New `--signal=alex-scan|holdings-entry|holdings-exit` (default
+    `alex-scan`, unchanged). `WalkForwardSample.score` is now `number | null` — Holdings'
+    two signals are verdict-only (buy/wait/avoid, sell/watch/hold), no numeric score to
+    bucket by decile, so `bucketByScoreDecile` skips those samples and the decile table is
+    skipped in the report rather than printing empty headers. Also exposed `--signal` on
+    the GitHub Actions workflow. 15 new tests, including one confirming the engine works
+    with a genuinely different, non-`analyzeStock` evaluator (not just happening to work
+    because it's secretly still calling `analyzeStock` somewhere) and one confirming the
+    no-lookahead guarantee survived the refactor (re-verified the same way as the original:
+    deliberately reintroduced the lookahead bug, watched the regression test catch it, then
+    reverted).
 
-## Backtesting Alex's scan (`scripts/backtest/`)
+## Backtesting this app's buy/sell signals (`scripts/backtest/`)
 
-### Results (2026-09-08 run: Tiingo, 10 years, all 41 tickers, 17,490 samples)
+This app makes three independent buy/sell recommendations, and `scripts/backtest/` can
+walk-forward test any of them via `--signal` (default `alex-scan`):
+
+| `--signal` | Function | What it answers | Feeds |
+|---|---|---|---|
+| `alex-scan` (default) | `analyzeStock()` (`src/lib/technicals.ts`) | General buy-timing screener — is this a good technical setup right now? | The options calculator, via **🔭 Alex's scan** |
+| `holdings-entry` | `entryVerdict()` (`src/lib/holdings.ts`) | Should I buy this stock, starting fresh? Independent of options entirely. | **💼 Holdings**' "Check a ticker before you buy" |
+| `holdings-exit` | `technicalVerdict()` (`src/lib/holdings.ts`) | I already own this — has the trend broken? | **💼 Holdings**' sell signal for an existing position |
+
+Only `alex-scan` has been run against real data so far (see **Results** below) — the other
+two share the exact same walk-forward engine and no-lookahead guarantee (`engine.ts`'s
+`walkForward` is generic over which evaluator runs each day; see `evaluators.ts`) but
+haven't been run for real yet.
+
+One scope note specific to Holdings' two signals: unlike Alex's scan (which feeds the
+options calculator, so an untradeable name is out of scope), a `Holding` is just shares
+and a cost basis — nothing requires it to be optionable. So testing `holdings-entry`/
+`holdings-exit` across a broader range of stock classes, including smaller and lower-priced
+names, is a legitimate question for those two signals specifically, not a mismatch the way
+it would be for Alex's scan. The real caution there is data quality, not relevance: sparse
+or unreliable price history, spreads wide enough that a backtested close-to-close return is
+unrealistic, and heavy survivorship bias in anything that thin — worth a wider `--tickers`
+list once there's a real run to look at, but read those results with that in mind.
+
+### Results (2026-09-08 run: `--signal=alex-scan`, Tiingo, 10 years, all 41 tickers, 17,490 samples)
 
 **The scoring does not show a reliable edge.** "Strong setup" was supposed to beat
 "Avoid" — it doesn't hold up:
@@ -660,47 +703,54 @@ this backtest cannot back up. This result has not yet been reflected inside the 
 oversight.
 
 **Next steps, in order of how much they'd actually tell us:**
-1. **Fit/test split** — the weights were hand-guessed, never fit to data at all. Refit
-   thresholds on an early period, test purely on a later one never touched during fitting
-   (`--split-date` now supports checking the *existing* fixed weights across two eras;
-   an actual refit would need a parameterized variant of `analyzeStock`, kept separate
-   from the production function so backtesting it never risks drifting from what ships).
-2. **Cross-sectional relative-strength scoring** — absolute-level technicals (RSI between
+1. ~~**Fit/test split**~~ — done: `--split-date` reports the grade/decile tables separately
+   for an early era and a later one, checking the *existing* fixed weights across both
+   rather than just the pooled 10 years. An actual refit of the weights (not just checking
+   whether the current ones generalize) would still need a parameterized variant of
+   `analyzeStock`, kept separate from the production function so backtesting it never
+   risks drifting from what ships.
+2. **Run `holdings-entry` and `holdings-exit` for real** — the harness now covers all three
+   of this app's buy/sell signals (see the table above), but only `alex-scan` has actually
+   been run against real data. Holdings' two signals are untested.
+3. **Cross-sectional relative-strength scoring** — absolute-level technicals (RSI between
    45–60, etc.) are among the weaker-supported edges in the literature; ranking stocks
    against each other each day has more historical support.
-3. **Earnings blackout** — needs a historical earnings-date source; Tiingo's free tier
+4. **Earnings blackout** — needs a historical earnings-date source; Tiingo's free tier
    doesn't include one. Unresolved pending a data-source decision.
-4. **Wider universe** — S&P 500 (~500 names) rather than 41 mega-caps/ETFs, both for
-   statistical power and to check the sector/cap-tier breakdown (`--sector-breakdown`,
-   `--cap-breakdown`) on a real spread of names instead of an all-mega-cap sample.
-
-Alex's scan's scoring weights (`src/lib/technicals.ts`, ported as-is from `stock-coach`)
-have never been validated against real historical outcomes — the app has always just
-trusted that "confirmed uptrend + tight pullback + relative strength + healthy RSI"
-adds up to a real edge. `scripts/backtest/` is a walk-forward backtest that checks: did a
-higher score/grade actually correlate with a better forward return than a lower one,
-historically?
+5. **Wider universe** — S&P 500 (~500 names) rather than 41 mega-caps/ETFs for `alex-scan`,
+   both for statistical power and to check the sector/cap-tier breakdown
+   (`--sector-breakdown`, `--cap-breakdown`) on a real spread of names. For
+   `holdings-entry`/`holdings-exit` specifically, a broader range of stock classes
+   (smaller/lower-priced names, not just large caps) is worth including too, since neither
+   signal is options-gated the way `alex-scan` is — see the scope note above.
 
 **How it works:** for each ticker and each historical trading day `i` (starting once
 there's enough trailing history for a real `sma200` read), it calls the exact same
-`analyzeStock()` the live app calls, but only with bars up to and including day `i` —
-never a bar from the future — then measures the actual forward return over several
-horizons (5/10/20 trading days) and buckets those returns by the grade/score `analyzeStock`
-would have shown a user that day. If the scoring means anything, a "Strong setup" bucket's
-mean forward return should beat "Avoid," and mean return should trend upward score-decile
-by score-decile.
+evaluator function the live app calls — `analyzeStock()`, `entryVerdict()`, or
+`technicalVerdict()` depending on `--signal` — but only with bars up to and including day
+`i`, never a bar from the future, then measures the actual forward return over several
+horizons (5/10/20 trading days) and buckets those returns by the grade/verdict the live
+app would have shown a user that day. If the signal means anything, its best label
+("Strong setup," "buy," or "hold" depending on which one) should show a better mean
+forward return than its worst one ("Avoid," "avoid," "sell"), and — for `alex-scan`, the
+only one with a numeric score — mean return should trend upward score-decile by
+score-decile.
 
 ```bash
 # Sanity-check the harness itself — synthetic data, no credentials needed:
 npm run backtest:alex -- --dry-run
 
 # The real thing — pick a --source (see the comparison below):
-npm run backtest:alex                                              # Alpaca, defaults
+npm run backtest:alex                                              # alex-scan, Alpaca, defaults
 npm run backtest:alex -- --source=tiingo --years=10
 npm run backtest:alex -- --source=norgate --norgate-dir=./norgate-export
 npm run backtest:alex -- --source=norgate --norgate-dir=./norgate-export --universe=./sp500-constituents.csv
 npm run backtest:alex -- --years=5 --horizons=5,10,20 --stride=5
 npm run backtest:alex -- --tickers=AAPL,MSFT,NVDA --out=my-run.json
+
+# Pick a different signal — see the table above (default is alex-scan):
+npm run backtest:alex -- --signal=holdings-entry --source=tiingo --years=10
+npm run backtest:alex -- --signal=holdings-exit --source=tiingo --years=10
 
 # Fit/test split and extra breakdowns — see "Results" above for why:
 npm run backtest:alex -- --source=tiingo --years=10 --split-date=2021-01-01

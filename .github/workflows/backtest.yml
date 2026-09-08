@@ -12,6 +12,12 @@ name: Backtest Alex's scan (manual)
 on:
   workflow_dispatch:
     inputs:
+      signal:
+        description: "Which recommendation system to test"
+        type: choice
+        options: ["alex-scan", "holdings-entry", "holdings-exit"]
+        required: false
+        default: "alex-scan"
       years:
         description: "Years of history"
         required: false
@@ -60,7 +66,7 @@ jobs:
             echo "::error::TIINGO_API_KEY repo secret is not set. Add it under Settings > Secrets and variables > Actions > New repository secret."
             exit 1
           fi
-          ARGS="--source=tiingo --years=${{ inputs.years }} --horizons=${{ inputs.horizons }} --stride=${{ inputs.stride }}"
+          ARGS="--source=tiingo --signal=${{ inputs.signal }} --years=${{ inputs.years }} --horizons=${{ inputs.horizons }} --stride=${{ inputs.stride }}"
           if [ -n "${{ inputs.tickers }}" ]; then
             ARGS="$ARGS --tickers=${{ inputs.tickers }}"
           fi

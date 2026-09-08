@@ -62,6 +62,10 @@ export function bucketByGrade(
 // grades: if the scoring actually tracks something real, mean forward
 // return should trend upward decile by decile, not just differ between the
 // top and bottom grade.
+// Evaluators without a numeric score (Holdings' entryVerdict/technicalVerdict
+// — see evaluators.ts) leave `score: null` on every sample; there's nothing
+// to bucket by decile for those, so such samples are skipped here rather
+// than crashing or silently landing in decile 0.
 export function bucketByScoreDecile(
   samples: WalkForwardSample[],
   horizon: number
@@ -70,6 +74,7 @@ export function bucketByScoreDecile(
   for (const s of samples) {
     const r = s.forwardReturns[horizon];
     if (r == null) continue;
+    if (s.score == null) continue;
     const decile = Math.min(9, Math.floor(s.score / 10));
     if (!groups.has(decile)) groups.set(decile, []);
     groups.get(decile)!.push(r);

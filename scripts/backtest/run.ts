@@ -1,7 +1,23 @@
-// CLI entry point — validate whether Alex's scan (src/lib/technicals.ts)
-// actually predicts anything, by walking forward through real historical
-// data and checking whether a higher grade/score correlates with a better
-// forward return than a lower one would have.
+// CLI entry point — validate whether this app's buy/sell recommendations
+// actually predict anything, by walking forward through real historical
+// data and checking whether a higher grade/score (or a "buy"/"sell"
+// verdict) correlates with a better forward return than a lower one or the
+// opposite verdict would have.
+//
+// --signal=alex-scan|holdings-entry|holdings-exit (default alex-scan)
+// picks WHICH of this app's three independent recommendation systems gets
+// tested (see evaluators.ts):
+//   alex-scan       — src/lib/technicals.ts's analyzeStock(), the general
+//                      buy-timing screener that feeds the options
+//                      calculator. Has a numeric 0-100 score (decile table
+//                      shown); grades Strong setup/Good setup/Watch/Weak/Avoid.
+//   holdings-entry  — src/lib/holdings.ts's entryVerdict(), Holdings' own
+//                      buy signal ("should I buy this stock", independent
+//                      of options entirely). No numeric score (decile
+//                      table skipped); verdicts buy/wait/avoid.
+//   holdings-exit   — src/lib/holdings.ts's technicalVerdict(), Holdings'
+//                      sell signal ("I already own this — is the trend
+//                      broken"). No numeric score; verdicts sell/watch/hold.
 //
 // Three data sources, chosen with --source (default alpaca):
 //
@@ -51,7 +67,8 @@
 //   npm run backtest:alex -- --source=norgate --norgate-dir=./norgate-export
 //   npm run backtest:alex -- --source=norgate --norgate-dir=./norgate-export --universe=./sp500-constituents.csv
 //   npm run backtest:alex -- --split-date=2021-01-01 --sector-breakdown --cap-breakdown
-//   npm run backtest:alex -- --tickers=AAPL,MSFT,NVDA --out=my-run.json
+//   npm run backtest:alex -- --signal=holdings-entry --source=tiingo --years=10
+//   npm run backtest:alex -- --signal=holdings-exit --tickers=AAPL,MSFT,NVDA --out=my-run.json
 
 import { writeFileSync } from "node:fs";
 import type { Bar } from "../../src/types";
@@ -73,15 +90,37 @@ import {
   type MembershipInterval,
 } from "./universe";
 import { generateSyntheticBars } from "./syntheticData";
-import { walkForward, type WalkForwardSample } from "./engine";
+import { walkForward, type WalkForwardSample, type Evaluator } from "./engine";
+import { alexScanEvaluator, holdingsEntryEvaluator, holdingsExitEvaluator } from "./evaluators";
 import { bucketByGrade, bucketByScoreDecile, bucketBySector, bucketByCapTier, splitByDate, type BucketStat } from "./stats";
 import { TICKER_META } from "./tickerMeta";
-import { printGradeTable, printDecileTable, printMetaTable } from "./report";
+import {
+  printGradeTable,
+  printDecileTable,
+  printMetaTable,
+  ALEX_SCAN_GRADE_ORDER,
+  HOLDINGS_ENTRY_GRADE_ORDER,
+  HOLDINGS_EXIT_GRADE_ORDER,
+} from "./report";
 
 type Source = "alpaca" | "tiingo" | "norgate";
+type Signal = "alex-scan" | "holdings-entry" | "holdings-exit";
+
+const GRADE_ORDER_FOR_SIGNAL: Record<Signal, string[]> = {
+  "alex-scan": ALEX_SCAN_GRADE_ORDER,
+  "holdings-entry": HOLDINGS_ENTRY_GRADE_ORDER,
+  "holdings-exit": HOLDINGS_EXIT_GRADE_ORDER,
+};
+
+function evaluatorFor(signal: Signal, sym: string, capital: number): Evaluator {
+  if (signal === "alex-scan") return alexScanEvaluator(sym, capital);
+  if (signal === "holdings-entry") return holdingsEntryEvaluator();
+  return holdingsExitEvaluator();
+}
 
 interface Args {
   source: Source;
+  signal: Signal;
   years: number;
   horizons: number[];
   stride: number;
@@ -138,11 +177,17 @@ function parseArgs(argv: string[]): Args {
     throw new Error(`--source must be one of alpaca, tiingo, norgate (got "${source}")`);
   }
 
+  const signal = (get("signal") ?? "alex-scan") as Signal;
+  if (!["alex-scan", "holdings-entry", "holdings-exit"].includes(signal)) {
+    throw new Error(`--signal must be one of alex-scan, holdings-entry, holdings-exit (got "${signal}")`);
+  }
+
   const norgateColumnsArg = get("norgate-columns");
   const universeColumnsArg = get("universe-columns");
 
   return {
     source,
+    signal,
     years: Number(get("years") ?? 5),
     horizons: (get("horizons") ?? "5,10,20").split(",").map(Number),
     stride: Number(get("stride") ?? 5),
@@ -237,8 +282,11 @@ function buildAndPrintReport(samples: WalkForwardSample[], args: Args, title?: s
   }
 
   if (title) console.log(`\n========== ${title} (${samples.length} samples) ==========`);
-  printGradeTable(byGrade);
-  printDecileTable(byDecile);
+  printGradeTable(byGrade, GRADE_ORDER_FOR_SIGNAL[args.signal]);
+  // Only alex-scan carries a numeric score — the other two signals leave
+  // every sample's score null, so this table would just print empty
+  // headers for them.
+  if (args.signal === "alex-scan") printDecileTable(byDecile);
   if (bySector) printMetaTable(bySector, "sector");
   if (byCapTier) printMetaTable(byCapTier, "cap tier");
 
@@ -269,8 +317,8 @@ async function main() {
   const tickers = resolveTickers(args, universeIntervals);
 
   console.log(
-    `source=${args.source} tickers=${tickers.length} years=${args.years} horizons=${args.horizons.join(",")} ` +
-      `stride=${args.stride} minLookback=${args.minLookback} capital=${args.capital}`
+    `source=${args.source} signal=${args.signal} tickers=${tickers.length} years=${args.years} ` +
+      `horizons=${args.horizons.join(",")} stride=${args.stride} minLookback=${args.minLookback} capital=${args.capital}`
   );
 
   const spyBars = await fetchBarsFor("SPY", tickers, args);
@@ -285,7 +333,7 @@ async function main() {
         continue;
       }
       const samples = walkForward(sym, bars, spyBars, {
-        capital: args.capital,
+        evaluate: evaluatorFor(args.signal, sym, args.capital),
         horizons: args.horizons,
         stride: args.stride,
         minLookback: args.minLookback,
