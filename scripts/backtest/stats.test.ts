@@ -1,5 +1,18 @@
 import { describe, it, expect } from "vitest";
-import { summarize, bucketByGrade, bucketByScoreDecile, bucketBySector, bucketByCapTier, splitByDate, type TickerMeta } from "./stats";
+import {
+  summarize,
+  bucketByGrade,
+  bucketByScoreDecile,
+  bucketBySector,
+  bucketByCapTier,
+  bucketByYear,
+  spearmanCorrelation,
+  scoreForwardReturnSpearman,
+  summarizeCsp,
+  bucketCspByGrade,
+  splitByDate,
+  type TickerMeta,
+} from "./stats";
 import type { WalkForwardSample } from "./engine";
 
 function sample(overrides: Partial<WalkForwardSample> = {}): WalkForwardSample {
@@ -9,6 +22,8 @@ function sample(overrides: Partial<WalkForwardSample> = {}): WalkForwardSample {
     score: 50,
     grade: "Watch",
     forwardReturns: { 5: 0.01 },
+    cspReturn: null,
+    cspAssigned: null,
     ...overrides,
   };
 }
@@ -121,6 +136,124 @@ describe("bucketByCapTier", () => {
     ];
     const buckets = bucketByCapTier(samples, 5, META);
     expect(buckets["mega"].n).toBe(3); // all three are "mega" here regardless of differing sectors
+  });
+});
+
+describe("bucketByYear", () => {
+  it("groups samples by the first 4 characters of asOfDate", () => {
+    const samples: WalkForwardSample[] = [
+      sample({ asOfDate: "2020-03-01T00:00:00Z", forwardReturns: { 5: 0.01 } }),
+      sample({ asOfDate: "2020-11-01T00:00:00Z", forwardReturns: { 5: 0.03 } }),
+      sample({ asOfDate: "2021-01-01T00:00:00Z", forwardReturns: { 5: -0.02 } }),
+    ];
+    const buckets = bucketByYear(samples, 5);
+    expect(buckets["2020"].n).toBe(2);
+    expect(buckets["2020"].meanReturn).toBeCloseTo(0.02, 10);
+    expect(buckets["2021"].n).toBe(1);
+  });
+
+  it("skips samples with a null forward return at the requested horizon", () => {
+    const samples: WalkForwardSample[] = [sample({ asOfDate: "2020-01-01T00:00:00Z", forwardReturns: { 10: null } })];
+    const buckets = bucketByYear(samples, 10);
+    expect(buckets["2020"]).toBeUndefined();
+  });
+});
+
+describe("spearmanCorrelation", () => {
+  it("is +1 for a perfectly monotonic increasing relationship", () => {
+    expect(spearmanCorrelation([1, 2, 3, 4, 5], [10, 20, 30, 40, 50])).toBeCloseTo(1, 10);
+  });
+
+  it("is -1 for a perfectly monotonic decreasing relationship", () => {
+    expect(spearmanCorrelation([1, 2, 3, 4, 5], [50, 40, 30, 20, 10])).toBeCloseTo(-1, 10);
+  });
+
+  it("is robust to a nonlinear (but still monotonic) relationship — unlike a Pearson correlation would be", () => {
+    // y = x^3, wildly nonlinear, but every step is still strictly increasing.
+    expect(spearmanCorrelation([1, 2, 3, 4, 5], [1, 8, 27, 64, 125])).toBeCloseTo(1, 10);
+  });
+
+  it("handles tied values via averaged ranks rather than crashing or biasing on tie order", () => {
+    // Two x's tied at 2; their averaged rank keeps this symmetric rather
+    // than arbitrarily favoring whichever tied sample came first.
+    const rho = spearmanCorrelation([1, 2, 2, 3], [10, 20, 20, 30]);
+    expect(rho).toBeCloseTo(1, 10);
+  });
+
+  it("returns NaN for a constant series (undefined correlation, not zero)", () => {
+    expect(Number.isNaN(spearmanCorrelation([1, 1, 1], [1, 2, 3]))).toBe(true);
+  });
+
+  it("returns NaN for fewer than 2 samples", () => {
+    expect(Number.isNaN(spearmanCorrelation([1], [1]))).toBe(true);
+    expect(Number.isNaN(spearmanCorrelation([], []))).toBe(true);
+  });
+
+  it("throws on mismatched lengths rather than silently misaligning pairs", () => {
+    expect(() => spearmanCorrelation([1, 2], [1])).toThrow();
+  });
+});
+
+describe("scoreForwardReturnSpearman", () => {
+  it("matches calling spearmanCorrelation directly on the same score/return pairs", () => {
+    const samples: WalkForwardSample[] = [
+      sample({ score: 10, forwardReturns: { 5: -0.02 } }),
+      sample({ score: 50, forwardReturns: { 5: 0.01 } }),
+      sample({ score: 90, forwardReturns: { 5: 0.05 } }),
+    ];
+    const rho = scoreForwardReturnSpearman(samples, 5);
+    expect(rho).toBeCloseTo(spearmanCorrelation([10, 50, 90], [-0.02, 0.01, 0.05]), 10);
+  });
+
+  it("skips samples with a null score or null forward return at this horizon", () => {
+    const samples: WalkForwardSample[] = [
+      sample({ score: 10, forwardReturns: { 5: -0.02 } }),
+      sample({ score: null, forwardReturns: { 5: 0.5 } }), // no score — must not pollute the correlation
+      sample({ score: 90, forwardReturns: { 5: null } }), // no return at this horizon
+      sample({ score: 50, forwardReturns: { 5: 0.01 } }),
+    ];
+    const rho = scoreForwardReturnSpearman(samples, 5);
+    expect(rho).toBeCloseTo(spearmanCorrelation([10, 50], [-0.02, 0.01]), 10);
+  });
+});
+
+describe("summarizeCsp", () => {
+  it("computes mean/median/p05/win rate/assigned rate on a known sample", () => {
+    const outcomes = [
+      { returnOnCollateral: 0.02, assigned: false },
+      { returnOnCollateral: 0.02, assigned: false },
+      { returnOnCollateral: 0.02, assigned: false },
+      { returnOnCollateral: -0.3, assigned: true }, // one big loss in the tail
+    ];
+    const s = summarizeCsp("test", outcomes);
+    expect(s.n).toBe(4);
+    expect(s.winRate).toBeCloseTo(0.75, 10);
+    expect(s.assignedRate).toBeCloseTo(0.25, 10);
+    expect(s.meanReturn).toBeCloseTo((0.02 * 3 - 0.3) / 4, 10);
+    // p05 (5th percentile) should sit down in the loss, not among the wins,
+    // since it's the worst outcome in a 4-sample set.
+    expect(s.p05Return).toBeLessThan(0);
+  });
+
+  it("returns NaN fields, not a crash, for an empty bucket", () => {
+    const s = summarizeCsp("empty", []);
+    expect(s.n).toBe(0);
+    expect(Number.isNaN(s.meanReturn)).toBe(true);
+    expect(Number.isNaN(s.p05Return)).toBe(true);
+  });
+});
+
+describe("bucketCspByGrade", () => {
+  it("groups by grade and skips samples with no modeled CSP outcome", () => {
+    const samples: WalkForwardSample[] = [
+      sample({ grade: "Strong setup", cspReturn: 0.03, cspAssigned: false }),
+      sample({ grade: "Strong setup", cspReturn: -0.1, cspAssigned: true }),
+      sample({ grade: "Avoid", cspReturn: 0.01, cspAssigned: false }),
+      sample({ grade: "Avoid", cspReturn: null, cspAssigned: null }), // opts.csp wasn't requested for this sample — skipped, not a zero
+    ];
+    const buckets = bucketCspByGrade(samples);
+    expect(buckets["Strong setup"].n).toBe(2);
+    expect(buckets["Avoid"].n).toBe(1);
   });
 });
 

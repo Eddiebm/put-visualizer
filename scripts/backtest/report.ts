@@ -2,7 +2,8 @@
 // a thin orchestrator and this formatting logic can change without
 // touching the sampling/stats logic it's reporting on.
 
-import type { BucketStat } from "./stats";
+import type { BucketStat, CspBucketStat } from "./stats";
+import type { CspTradeParams } from "./cspOverlay";
 
 // One order per signal (see evaluators.ts) — each has its own grade/verdict
 // vocabulary, so there's no single fixed order that works for all three.
@@ -69,6 +70,84 @@ export function printDecileTable(byHorizon: Record<number, Record<number, Bucket
       );
     }
   }
+}
+
+// score-vs-forward-return Spearman rank correlation, one horizon per line —
+// a stricter monotonicity check than the decile table above (see
+// scoreForwardReturnSpearman's own docstring in stats.ts for why rank-based
+// rather than a plain Pearson correlation).
+export function printSpearmanTable(byHorizon: Record<number, number>): void {
+  console.log("\n── Spearman rank correlation, score vs forward return ──");
+  console.log(
+    "(-1 = higher score means a WORSE forward return, 0 = no monotonic\n" +
+      " relationship, +1 = higher score means a better forward return)"
+  );
+  for (const horizon of Object.keys(byHorizon).map(Number).sort((a, b) => a - b)) {
+    const rho = byHorizon[horizon];
+    console.log(`  ${String(horizon).padStart(3)}d:  ρ = ${Number.isFinite(rho) ? rho.toFixed(3) : "n/a"}`);
+  }
+}
+
+// Same samples as printGradeTable, broken out by calendar year instead of
+// by grade — sorted chronologically (not by sample count, unlike
+// printMetaTable) since the point is seeing the pattern move through time,
+// not ranking which year has the most data.
+export function printYearTable(byHorizon: Record<number, Record<string, BucketStat>>): void {
+  for (const horizon of Object.keys(byHorizon).map(Number).sort((a, b) => a - b)) {
+    const buckets = byHorizon[horizon];
+    console.log(`\n── ${horizon}-trading-day forward return, by year ──`);
+    console.log(["Year".padEnd(8), "n".padStart(6), "mean".padStart(9), "win%".padStart(8)].join("  "));
+    for (const year of Object.keys(buckets).sort()) {
+      const b = buckets[year];
+      console.log(
+        [year.padEnd(8), String(b.n).padStart(6), pct(b.meanReturn).padStart(9), pct(b.winRate).padStart(8)].join("  ")
+      );
+    }
+  }
+}
+
+// The modeled cash-secured-put overlay (see cspOverlay.ts), bucketed by
+// grade — does a better grade actually pay more, or (the sharper question)
+// reduce the left tail (p05), relative to a worse one?
+export function printCspTable(byGrade: Record<string, CspBucketStat>, order: string[], params: CspTradeParams): void {
+  console.log(
+    `\n── Modeled cash-secured put overlay: ${params.dte}-DTE, ${Math.round(params.deltaTarget * 100)}-delta, ` +
+      `premium via Black-Scholes off trailing ${params.ivLookback}-day realized vol ──`
+  );
+  console.log(
+    [
+      "Grade".padEnd(14),
+      "n".padStart(6),
+      "mean ROC".padStart(10),
+      "median".padStart(9),
+      "p05 (tail)".padStart(11),
+      "win%".padStart(8),
+      "assigned%".padStart(11),
+    ].join("  ")
+  );
+  for (const label of order) {
+    const b = byGrade[label];
+    if (!b) continue;
+    console.log(
+      [
+        label.padEnd(14),
+        String(b.n).padStart(6),
+        pct(b.meanReturn).padStart(10),
+        pct(b.medianReturn).padStart(9),
+        pct(b.p05Return).padStart(11),
+        pct(b.winRate).padStart(8),
+        pct(b.assignedRate).padStart(11),
+      ].join("  ")
+    );
+  }
+  console.log(
+    "\nReturn on collateral (ROC) = net P/L ÷ strike, the capital a cash-secured put\n" +
+      "actually locks up. p05 is the 5th-percentile ROC (roughly a 1-in-20 outcome) —\n" +
+      "the left tail a high win rate can hide. NOT a real quote: no historical options\n" +
+      "chain exists here, so premium is modeled off trailing realized vol as an IV\n" +
+      "proxy — see cspOverlay.ts's docstring for exactly what that does and doesn't\n" +
+      "capture."
+  );
 }
 
 // Generic printer for bucketBySector/bucketByCapTier output — arbitrary

@@ -51,13 +51,30 @@
 // only shows up when both eras are blended together is a much weaker
 // finding than one that holds in each era on its own.
 //
-// --sector-breakdown / --cap-breakdown — additional views on the SAME
-// samples (see tickerMeta.ts), not a new fetch: does the effect differ by
-// sector, or between mega-caps and smaller names? Off by default since
-// they add real console output; turn on what you want to look at.
+// --sector-breakdown / --cap-breakdown / --year-breakdown — additional
+// views on the SAME samples (see tickerMeta.ts and stats.ts's
+// bucketByYear), not a new fetch: does the effect differ by sector, by
+// market-cap tier, or hold up year by year rather than being concentrated
+// in one crash or one melt-up? Off by default since they add real console
+// output; turn on what you want to look at.
 //
-// See README.md's "Backtesting Alex's scan" section for the full
-// comparison and what does/doesn't fix survivorship bias.
+// For alex-scan specifically (the only signal with a numeric score), a
+// Spearman rank correlation between score and forward return prints
+// automatically — a stricter monotonicity check than the decile table
+// (see stats.ts's scoreForwardReturnSpearman for why rank-based).
+//
+// --csp-overlay — also models what a 45-DTE, 30-delta cash-secured put
+// sold that day would have paid (Black-Scholes off trailing realized vol
+// as an IV proxy — see cspOverlay.ts for exactly what that does and
+// doesn't capture), bucketed by grade, including the 5th-percentile
+// return-on-collateral (the left tail a win rate alone can hide). Override
+// the trade shape with --csp-dte, --csp-delta, --csp-iv-lookback. This is
+// the sharper question a plain stock-return backtest can't ask: does a
+// better grade actually pay more, or reduce tail risk, for the product
+// this app actually helps someone sell?
+//
+// See README.md's "Backtesting this app's buy/sell signals" section for
+// the full comparison and what does/doesn't fix survivorship bias.
 //
 // Usage:
 //
@@ -69,6 +86,8 @@
 //   npm run backtest:alex -- --split-date=2021-01-01 --sector-breakdown --cap-breakdown
 //   npm run backtest:alex -- --signal=holdings-entry --source=tiingo --years=10
 //   npm run backtest:alex -- --signal=holdings-exit --tickers=AAPL,MSFT,NVDA --out=my-run.json
+//   npm run backtest:alex -- --year-breakdown --csp-overlay
+//   npm run backtest:alex -- --csp-overlay --csp-dte=30 --csp-delta=0.2
 
 import { writeFileSync } from "node:fs";
 import type { Bar } from "../../src/types";
@@ -92,12 +111,27 @@ import {
 import { generateSyntheticBars } from "./syntheticData";
 import { walkForward, type WalkForwardSample, type Evaluator } from "./engine";
 import { alexScanEvaluator, holdingsEntryEvaluator, holdingsExitEvaluator } from "./evaluators";
-import { bucketByGrade, bucketByScoreDecile, bucketBySector, bucketByCapTier, splitByDate, type BucketStat } from "./stats";
+import type { CspTradeParams } from "./cspOverlay";
+import {
+  bucketByGrade,
+  bucketByScoreDecile,
+  bucketBySector,
+  bucketByCapTier,
+  bucketByYear,
+  bucketCspByGrade,
+  scoreForwardReturnSpearman,
+  splitByDate,
+  type BucketStat,
+  type CspBucketStat,
+} from "./stats";
 import { TICKER_META } from "./tickerMeta";
 import {
   printGradeTable,
   printDecileTable,
   printMetaTable,
+  printYearTable,
+  printSpearmanTable,
+  printCspTable,
   ALEX_SCAN_GRADE_ORDER,
   HOLDINGS_ENTRY_GRADE_ORDER,
   HOLDINGS_EXIT_GRADE_ORDER,
@@ -136,6 +170,11 @@ interface Args {
   splitDate?: string;
   sectorBreakdown: boolean;
   capBreakdown: boolean;
+  yearBreakdown: boolean;
+  cspOverlay: boolean;
+  cspDte: number;
+  cspDelta: number;
+  cspIvLookback: number;
 }
 
 // Overrides only the fields present in `arg` ("field:header,field:header"),
@@ -203,7 +242,16 @@ function parseArgs(argv: string[]): Args {
     splitDate: get("split-date"),
     sectorBreakdown: argv.includes("--sector-breakdown"),
     capBreakdown: argv.includes("--cap-breakdown"),
+    yearBreakdown: argv.includes("--year-breakdown"),
+    cspOverlay: argv.includes("--csp-overlay"),
+    cspDte: Number(get("csp-dte") ?? 45),
+    cspDelta: Number(get("csp-delta") ?? 0.3),
+    cspIvLookback: Number(get("csp-iv-lookback") ?? 20),
   };
+}
+
+function cspParamsFor(args: Args): CspTradeParams {
+  return { dte: args.cspDte, deltaTarget: args.cspDelta, ivLookback: args.cspIvLookback, rate: 0.05 };
 }
 
 // Explicit --tickers wins; otherwise, with --universe given, every symbol
@@ -264,6 +312,9 @@ interface Report {
   byDecile: Record<number, Record<number, BucketStat>>;
   bySector?: Record<number, Record<string, BucketStat>>;
   byCapTier?: Record<number, Record<string, BucketStat>>;
+  byYear?: Record<number, Record<string, BucketStat>>;
+  spearman?: Record<number, number>;
+  csp?: Record<string, CspBucketStat>;
 }
 
 // Builds every requested bucketing over one sample set and prints it —
@@ -274,12 +325,20 @@ function buildAndPrintReport(samples: WalkForwardSample[], args: Args, title?: s
   const byDecile: Report["byDecile"] = {};
   const bySector: Report["bySector"] = args.sectorBreakdown ? {} : undefined;
   const byCapTier: Report["byCapTier"] = args.capBreakdown ? {} : undefined;
+  const byYear: Report["byYear"] = args.yearBreakdown ? {} : undefined;
+  // Only alex-scan carries a numeric score — Spearman needs one, so it's
+  // meaningless (and skipped) for the other two signals the same way the
+  // decile table already is below.
+  const spearman: Report["spearman"] = args.signal === "alex-scan" ? {} : undefined;
   for (const h of args.horizons) {
     byGrade[h] = bucketByGrade(samples, h);
     byDecile[h] = bucketByScoreDecile(samples, h);
     if (bySector) bySector[h] = bucketBySector(samples, h, TICKER_META);
     if (byCapTier) byCapTier[h] = bucketByCapTier(samples, h, TICKER_META);
+    if (byYear) byYear[h] = bucketByYear(samples, h);
+    if (spearman) spearman[h] = scoreForwardReturnSpearman(samples, h);
   }
+  const csp = args.cspOverlay ? bucketCspByGrade(samples) : undefined;
 
   if (title) console.log(`\n========== ${title} (${samples.length} samples) ==========`);
   printGradeTable(byGrade, GRADE_ORDER_FOR_SIGNAL[args.signal]);
@@ -287,10 +346,13 @@ function buildAndPrintReport(samples: WalkForwardSample[], args: Args, title?: s
   // every sample's score null, so this table would just print empty
   // headers for them.
   if (args.signal === "alex-scan") printDecileTable(byDecile);
+  if (spearman) printSpearmanTable(spearman);
   if (bySector) printMetaTable(bySector, "sector");
   if (byCapTier) printMetaTable(byCapTier, "cap tier");
+  if (byYear) printYearTable(byYear);
+  if (csp) printCspTable(csp, GRADE_ORDER_FOR_SIGNAL[args.signal], cspParamsFor(args));
 
-  return { sampleCount: samples.length, byGrade, byDecile, bySector, byCapTier };
+  return { sampleCount: samples.length, byGrade, byDecile, bySector, byCapTier, byYear, spearman, csp };
 }
 
 async function main() {
@@ -338,6 +400,7 @@ async function main() {
         stride: args.stride,
         minLookback: args.minLookback,
         isEligible: eligibilityIndex ? (d) => isSymbolEligible(eligibilityIndex, sym, d) : undefined,
+        csp: args.cspOverlay ? cspParamsFor(args) : undefined,
       });
       allSamples.push(...samples);
       console.log(`  ${sym}: ${bars.length} bars -> ${samples.length} samples`);

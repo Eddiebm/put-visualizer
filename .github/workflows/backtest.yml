@@ -48,6 +48,16 @@ on:
         type: boolean
         required: false
         default: false
+      year_breakdown:
+        description: "Also break results out by calendar year"
+        type: boolean
+        required: false
+        default: false
+      csp_overlay:
+        description: "Also model a cash-secured put overlay (default 45-DTE, 30-delta) by grade"
+        type: boolean
+        required: false
+        default: false
 
 jobs:
   backtest:
@@ -78,6 +88,12 @@ jobs:
           fi
           if [ "${{ inputs.cap_breakdown }}" = "true" ]; then
             ARGS="$ARGS --cap-breakdown"
+          fi
+          if [ "${{ inputs.year_breakdown }}" = "true" ]; then
+            ARGS="$ARGS --year-breakdown"
+          fi
+          if [ "${{ inputs.csp_overlay }}" = "true" ]; then
+            ARGS="$ARGS --csp-overlay"
           fi
           npm run backtest:alex -- $ARGS
       - name: Upload full results JSON

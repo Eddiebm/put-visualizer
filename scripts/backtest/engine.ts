@@ -21,6 +21,7 @@
 // same day-stepping logic that could quietly drift apart.
 
 import type { Bar } from "../../src/types";
+import { modelCspTrade, type CspTradeParams } from "./cspOverlay";
 
 export interface WalkForwardSample {
   sym: string;
@@ -34,6 +35,13 @@ export interface WalkForwardSample {
   // before that horizon (shouldn't happen given the loop's own stopping
   // condition below, but kept nullable rather than assumed).
   forwardReturns: Record<number, number | null>;
+  // Modeled cash-secured-put return on collateral for a trade opened this
+  // day (see cspOverlay.ts) — null when opts.csp wasn't given, or when
+  // modelCspTrade itself couldn't price a trade for this day (not enough
+  // trailing/forward history for its own DTE/vol-lookback, independent of
+  // this sample's own minLookback/horizons).
+  cspReturn: number | null;
+  cspAssigned: boolean | null; // whether that modeled put finished ITM — null under the same conditions as cspReturn
 }
 
 export interface EvaluateResult {
@@ -59,6 +67,12 @@ export interface WalkForwardOptions {
   // whether the symbol was actually eligible (e.g. a real index member)
   // on that date.
   isEligible?: (dateIso: string) => boolean;
+  // Optional cash-secured-put overlay (see cspOverlay.ts) — when given,
+  // each sample also gets a modeled CSP outcome for a trade opened that
+  // day, independent of opts.evaluate's own grade/score. Omitted by
+  // default since it's an extra Black-Scholes computation per sample and
+  // most callers just want the stock-return question answered.
+  csp?: CspTradeParams;
 }
 
 // Aligns spyBars to `bars` by calendar date (the first 10 chars of each
@@ -111,12 +125,19 @@ export function walkForward(
       forwardReturns[h] = idx < bars.length ? (bars[idx].c - bars[i].c) / bars[i].c : null;
     }
 
+    // Same no-lookahead discipline as the score itself: modelCspTrade sizes
+    // the trade off bars[0..i] only, and settles it against a genuinely
+    // future bar the exact same way forwardReturns above already does.
+    const cspOutcome = opts.csp ? modelCspTrade(bars, i, opts.csp) : null;
+
     samples.push({
       sym,
       asOfDate: bars[i].t ?? String(i),
       score: result.score,
       grade: result.grade,
       forwardReturns,
+      cspReturn: cspOutcome?.returnOnCollateral ?? null,
+      cspAssigned: cspOutcome?.assigned ?? null,
     });
   }
 

@@ -14,6 +14,22 @@
 
 import type { WalkForwardSample } from "./engine";
 
+// Linear-interpolation percentile over an already-ascending-sorted array —
+// used by summarizeCsp's p05 (the left-tail number that matters for a
+// short-put strategy, where a high win rate can hide a small number of
+// large losses that a mean or median alone won't show).
+function percentile(sortedAsc: number[], p: number): number {
+  const n = sortedAsc.length;
+  if (n === 0) return NaN;
+  if (n === 1) return sortedAsc[0];
+  const rank = p * (n - 1);
+  const lo = Math.floor(rank);
+  const hi = Math.ceil(rank);
+  if (lo === hi) return sortedAsc[lo];
+  const frac = rank - lo;
+  return sortedAsc[lo] * (1 - frac) + sortedAsc[hi] * frac;
+}
+
 export interface BucketStat {
   label: string;
   n: number;
@@ -135,6 +151,149 @@ export function bucketByCapTier(
   meta: Map<string, TickerMeta>
 ): Record<string, BucketStat> {
   return bucketByMetaField(samples, horizon, meta, "capTier");
+}
+
+// Does the (lack of an) effect hold up year by year, or is it concentrated
+// in a handful of unusual years (a single crash, a single melt-up) that
+// dominate the pooled mean? asOfDate's first 4 characters are the calendar
+// year in every source this harness fetches from (Alpaca/Tiingo/Norgate
+// all hand back ISO-8601 dates), so this is a plain substring, not a Date
+// parse — same idea as splitByDate's own pure-string comparison below.
+export function bucketByYear(samples: WalkForwardSample[], horizon: number): Record<string, BucketStat> {
+  const groups = new Map<string, number[]>();
+  for (const s of samples) {
+    const r = s.forwardReturns[horizon];
+    if (r == null) continue;
+    const year = s.asOfDate.slice(0, 4);
+    if (!groups.has(year)) groups.set(year, []);
+    groups.get(year)!.push(r);
+  }
+  const out: Record<string, BucketStat> = {};
+  for (const [year, returns] of groups) out[year] = summarize(year, returns);
+  return out;
+}
+
+// Rank-based (Spearman) correlation: does a HIGHER score correlate with a
+// BETTER forward return, monotonically — a stricter question than
+// bucketByGrade ("do the top and bottom buckets differ") or
+// bucketByScoreDecile ("does the mean trend upward decile by decile on
+// average"). Rank-based rather than Pearson so it doesn't assume a linear
+// relationship or get distorted by a handful of extreme-return outliers —
+// the standard choice for "does this score predict rank order" questions
+// in the trading-signal literature this was ported from (see README.md).
+//
+// Ties (repeated scores, or repeated returns) get the AVERAGE of the ranks
+// they'd occupy — the standard tie-handling method. Without it, samples
+// tied on score would be ranked arbitrarily among themselves, which biases
+// the correlation when there are many ties (e.g. a discrete 0-100 score
+// with a large sample size will have plenty).
+function rankWithTies(values: number[]): number[] {
+  const n = values.length;
+  const order = values.map((_, i) => i).sort((a, b) => values[a] - values[b]);
+  const ranks = new Array<number>(n);
+  let i = 0;
+  while (i < n) {
+    let j = i;
+    while (j + 1 < n && values[order[j + 1]] === values[order[i]]) j++;
+    const avgRank = (i + j) / 2 + 1; // 1-based rank, averaged across the tied block
+    for (let k = i; k <= j; k++) ranks[order[k]] = avgRank;
+    i = j + 1;
+  }
+  return ranks;
+}
+
+// -1 = higher rank in x means a WORSE rank in y, 0 = no monotonic
+// relationship, +1 = higher x means better y. NaN for fewer than 2 samples
+// or a constant series (rank variance of zero — correlation is undefined,
+// not zero, when every value is identical).
+export function spearmanCorrelation(xs: number[], ys: number[]): number {
+  if (xs.length !== ys.length) throw new Error("spearmanCorrelation: xs and ys must be the same length");
+  const n = xs.length;
+  if (n < 2) return NaN;
+  const rx = rankWithTies(xs);
+  const ry = rankWithTies(ys);
+  const meanRx = rx.reduce((a, b) => a + b, 0) / n;
+  const meanRy = ry.reduce((a, b) => a + b, 0) / n;
+  let cov = 0;
+  let varX = 0;
+  let varY = 0;
+  for (let i = 0; i < n; i++) {
+    const dx = rx[i] - meanRx;
+    const dy = ry[i] - meanRy;
+    cov += dx * dy;
+    varX += dx * dx;
+    varY += dy * dy;
+  }
+  if (varX === 0 || varY === 0) return NaN;
+  return cov / Math.sqrt(varX * varY);
+}
+
+// Score-vs-forward-return Spearman for one horizon — skips samples with no
+// numeric score (Holdings' entryVerdict/technicalVerdict leave every
+// sample's score null; same guard as bucketByScoreDecile) or no forward
+// return at this horizon.
+export function scoreForwardReturnSpearman(samples: WalkForwardSample[], horizon: number): number {
+  const xs: number[] = [];
+  const ys: number[] = [];
+  for (const s of samples) {
+    const r = s.forwardReturns[horizon];
+    if (r == null || s.score == null) continue;
+    xs.push(s.score);
+    ys.push(r);
+  }
+  return spearmanCorrelation(xs, ys);
+}
+
+// Summary stats for a modeled CSP overlay bucket (see cspOverlay.ts) — a
+// distinct shape from BucketStat because a CSP trade has no "horizon" (its
+// DTE is fixed independent of the stock-return horizons being tested) and
+// carries return-on-collateral / assignment-rate concepts a plain forward
+// return doesn't.
+export interface CspBucketStat {
+  label: string;
+  n: number;
+  meanReturn: number; // mean return on collateral
+  medianReturn: number;
+  p05Return: number; // 5th-percentile return on collateral — the left tail
+  winRate: number; // fraction with netPL > 0 (premium exceeded any assignment loss)
+  assignedRate: number; // fraction that finished ITM (modeled as assigned)
+}
+
+export function summarizeCsp(
+  label: string,
+  outcomes: { returnOnCollateral: number; assigned: boolean }[]
+): CspBucketStat {
+  const n = outcomes.length;
+  if (n === 0) {
+    return { label, n: 0, meanReturn: NaN, medianReturn: NaN, p05Return: NaN, winRate: NaN, assignedRate: NaN };
+  }
+  const returns = outcomes.map((o) => o.returnOnCollateral);
+  const sorted = [...returns].sort((a, b) => a - b);
+  const meanReturn = returns.reduce((a, b) => a + b, 0) / n;
+  const medianReturn = percentile(sorted, 0.5);
+  const p05Return = percentile(sorted, 0.05);
+  const winRate = outcomes.filter((o) => o.returnOnCollateral > 0).length / n;
+  const assignedRate = outcomes.filter((o) => o.assigned).length / n;
+  return { label, n, meanReturn, medianReturn, p05Return, winRate, assignedRate };
+}
+
+// Buckets the modeled CSP overlay by grade — does "Strong setup" actually
+// pay better, or reduce tail risk (p05), relative to "Avoid"? This is the
+// question the external report's CSP overlay actually answered (it did
+// not: Strong setup did not reduce the ~-9% left tail). Samples without a
+// modeled CSP outcome (opts.csp not requested, or modelCspTrade returned
+// null for that day — see cspOverlay.ts) are skipped, not counted as a
+// zero.
+export function bucketCspByGrade(samples: WalkForwardSample[]): Record<string, CspBucketStat> {
+  const groups = new Map<string, { returnOnCollateral: number; assigned: boolean }[]>();
+  for (const s of samples) {
+    if (s.cspReturn == null || s.cspAssigned == null) continue;
+    if (!groups.has(s.grade)) groups.set(s.grade, []);
+    groups.get(s.grade)!.push({ returnOnCollateral: s.cspReturn, assigned: s.cspAssigned });
+  }
+  const out: Record<string, CspBucketStat> = {};
+  for (const [label, outcomes] of groups) out[label] = summarizeCsp(label, outcomes);
+  return out;
 }
 
 // Splits samples chronologically at `splitDateIso` (inclusive on the "on or

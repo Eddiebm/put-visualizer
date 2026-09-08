@@ -332,7 +332,7 @@ tree is TypeScript now (`strict: true`) — see **Since then** below.
 ## Running the tests and linter
 
 ```bash
-npm test          # Vitest — 419 tests: every pure module in src/lib/, every api/*.ts
+npm test          # Vitest — 444 tests: every pure module in src/lib/, every api/*.ts
                   # Edge function, every component in src/components/ (RTL),
                   # App.tsx's own orchestration (tabs, sync, tour, journal, Tasty),
                   # and the Alex's-scan backtest harness (scripts/backtest/)
@@ -645,6 +645,28 @@ aggregation, grouping closed trades by ISO week).
     no-lookahead guarantee survived the refactor (re-verified the same way as the original:
     deliberately reintroduced the lookahead bug, watched the regression test catch it, then
     reverted).
+31. Ran `holdings-entry` and `holdings-exit` for real (10 years, Tiingo, same 41 tickers,
+    17,490 samples each) — see **Results** below: neither shows an edge either.
+    `entryVerdict`'s `wait`/`avoid` beat `buy` at every horizon; `technicalVerdict`'s `sell`
+    isn't followed by worse outcomes than `hold`. Also ported the methodology from an
+    independent, more rigorous 20-year analysis of this same watchlist back into
+    `scripts/backtest/` as tested code, rather than leaving it a one-off script: a Spearman
+    rank correlation between score and forward return (`stats.ts`'s `spearmanCorrelation`/
+    `scoreForwardReturnSpearman`, printed automatically for `alex-scan`, the only signal
+    with a numeric score — 7 new tests including tie-handling and a nonlinear-but-monotonic
+    check), a per-calendar-year breakdown (`bucketByYear`, `--year-breakdown`), and a
+    modeled cash-secured-put overlay (`cspOverlay.ts`, `--csp-overlay`): a 45-DTE, 30-delta
+    short put priced via this app's own `src/lib/blackScholes.ts` (reused, not
+    re-implemented, so the overlay can't drift from the live app's own pricing math) off
+    trailing realized volatility as an IV proxy, bucketed by grade with mean/median/p05
+    return-on-collateral and assignment rate. The strike-for-delta search is a bisection
+    against the app's own `bsGreeks`, not a separate inverse-normal implementation, for the
+    same drift-proofing reason. 25 new tests total (`cspOverlay.test.ts`, plus additions to
+    `stats.test.ts` and `engine.test.ts`), including one proving the CSP overlay sizes a
+    trade from `bars[0..i]` only and a future price swing changes only the settlement, not
+    the strike/premium — the same no-lookahead discipline the walk-forward engine itself is
+    built on. Exposed `--year-breakdown` and `--csp-overlay` on the GitHub Actions workflow
+    too.
 
 ## Backtesting this app's buy/sell signals (`scripts/backtest/`)
 
@@ -657,10 +679,9 @@ walk-forward test any of them via `--signal` (default `alex-scan`):
 | `holdings-entry` | `entryVerdict()` (`src/lib/holdings.ts`) | Should I buy this stock, starting fresh? Independent of options entirely. | **💼 Holdings**' "Check a ticker before you buy" |
 | `holdings-exit` | `technicalVerdict()` (`src/lib/holdings.ts`) | I already own this — has the trend broken? | **💼 Holdings**' sell signal for an existing position |
 
-Only `alex-scan` has been run against real data so far (see **Results** below) — the other
-two share the exact same walk-forward engine and no-lookahead guarantee (`engine.ts`'s
-`walkForward` is generic over which evaluator runs each day; see `evaluators.ts`) but
-haven't been run for real yet.
+All three have now been run against real data (see **Results** below) — they share the
+exact same walk-forward engine and no-lookahead guarantee (`engine.ts`'s `walkForward` is
+generic over which evaluator runs each day; see `evaluators.ts`).
 
 One scope note specific to Holdings' two signals: unlike Alex's scan (which feeds the
 options calculator, so an untradeable name is out of scope), a `Holding` is just shares
@@ -672,10 +693,11 @@ or unreliable price history, spreads wide enough that a backtested close-to-clos
 unrealistic, and heavy survivorship bias in anything that thin — worth a wider `--tickers`
 list once there's a real run to look at, but read those results with that in mind.
 
-### Results (2026-09-08 run: `--signal=alex-scan`, Tiingo, 10 years, all 41 tickers, 17,490 samples)
+### Results (2026-09-08 runs: Tiingo, 10 years, all 41 tickers, 17,490 samples each)
 
-**The scoring does not show a reliable edge.** "Strong setup" was supposed to beat
-"Avoid" — it doesn't hold up:
+**None of the three signals shows a reliable edge.**
+
+**`alex-scan`** — "Strong setup" was supposed to beat "Avoid." It doesn't hold up:
 
 | Horizon | Strong setup | Watch | Avoid |
 |---|---|---|---|
@@ -691,16 +713,51 @@ which looks more like "the market went up most of this decade" than a stock-spec
 edge. The one encouraging number (the top score decile, 90–99, led at every horizon)
 doesn't survive scrutiny either: it's 193 of 17,490 samples (1.1%), and the decile right
 below it (80–89) is negative at 5 days — a real tail effect should degrade smoothly into
-its neighbor, not crater next door.
+its neighbor, not crater next door. The Spearman rank correlation between score and
+forward return (`--signal=alex-scan` prints this automatically; see **stats.ts**'s
+`scoreForwardReturnSpearman`) is close to zero at every horizon — consistent with an
+independent 20-year run of the same watchlist, which reported ρ ≈ −0.03: essentially no
+monotonic relationship between a higher score and a better forward return.
 
-**Conclusion:** as currently weighted, Alex's scan's scoring shows no reliable edge over
-this sample. That doesn't necessarily indict the underlying ideas (trend, pullback,
-relative strength, RSI) — the weights were hand-ported from `stock-coach` and never fit to
-data, so this could be a calibration problem rather than a conceptual one (see **Next
-steps** below). But right now the app shows a confident, color-coded "Strong setup" grade
-this backtest cannot back up. This result has not yet been reflected inside the app itself
-(no in-app disclosure has been added) — that's a deliberate, separate decision, not an
-oversight.
+**`holdings-entry`** (`entryVerdict()` — "should I buy this stock?") is, if anything,
+backwards. `wait`/`avoid` beat `buy` at every horizon:
+
+| Horizon | buy | wait | avoid |
+|---|---|---|---|
+| 5-day  | 0.37% | 0.46% | 0.40% |
+| 10-day | 0.72% | 0.93% | 0.83% |
+| 20-day | 1.41% | 1.67% | 1.91% |
+
+**`holdings-exit`** (`technicalVerdict()` — "has the trend broken, should I sell?") isn't
+protecting against downside the way its name implies. `sell` is not followed by worse
+outcomes than `hold` — all three stay positive, and `watch` is the strongest bucket at
+every horizon:
+
+| Horizon | sell | watch | hold |
+|---|---|---|---|
+| 5-day  | 0.35% | 0.51% | 0.40% |
+| 10-day | 0.75% | 1.00% | 0.80% |
+| 20-day | 1.75% | 1.89% | 1.57% |
+
+**Conclusion:** as currently weighted, none of this app's three buy/sell recommendation
+systems shows a reliable edge over this sample. That doesn't necessarily indict the
+underlying ideas (trend, pullback, relative strength, RSI) — the weights were hand-ported
+from `stock-coach` and never fit to data, so this could be a calibration problem rather
+than a conceptual one. But right now the app shows confident, color-coded "Strong setup" /
+"buy" / "sell" labels this backtest cannot back up. This result has not yet been reflected
+inside the app itself (no in-app disclosure has been added) — that's a deliberate,
+separate decision, not an oversight.
+
+**A sharper question than "did the stock go up": would a cash-secured put on it have paid
+you for the risk?** `--csp-overlay` models a 45-DTE, 30-delta short put opened each day
+(Black-Scholes off trailing realized vol — see `cspOverlay.ts`), which is the actual
+product this app helps someone sell, not just a stock-direction bet. An independent
+20-year run of this overlay found modeled CSPs were ~78% winners with roughly a −9%
+5th-percentile (left-tail) return on collateral **in every grade bucket** — "Strong setup"
+did not reduce the tail risk. High win rate and a fat left tail together are what
+short-premium strategies structurally look like; they are not evidence a scan is picking
+good setups. `bucketCspByGrade`'s `p05Return` is exactly the number to check this against
+on any future run.
 
 **Next steps, in order of how much they'd actually tell us:**
 1. ~~**Fit/test split**~~ — done: `--split-date` reports the grade/decile tables separately
@@ -709,15 +766,30 @@ oversight.
    whether the current ones generalize) would still need a parameterized variant of
    `analyzeStock`, kept separate from the production function so backtesting it never
    risks drifting from what ships.
-2. **Run `holdings-entry` and `holdings-exit` for real** — the harness now covers all three
-   of this app's buy/sell signals (see the table above), but only `alex-scan` has actually
-   been run against real data. Holdings' two signals are untested.
-3. **Cross-sectional relative-strength scoring** — absolute-level technicals (RSI between
+2. ~~**Run `holdings-entry` and `holdings-exit` for real**~~ — done, see **Results** above.
+   Neither shows an edge either.
+3. ~~**Port the Spearman/CSP/per-year methodology into tested code**~~ — done:
+   `spearmanCorrelation`/`scoreForwardReturnSpearman` and `bucketByYear` (`stats.ts`), and
+   the modeled CSP overlay (`cspOverlay.ts`, `--csp-overlay`) are now part of this harness
+   rather than a one-off script — every future run gets this level of rigor automatically.
+4. **Redesign what "pick" and "don't pick" mean.** The backtests above rule out "this name
+   will outperform" as something any of the three signals can defend. What they don't rule
+   out is a suitability gate: would you accept owning the shares at this strike, does the
+   position fit the account, is there a known event (earnings) in the window, and is the
+   market paying fairly for the move this stock has actually been making (`richness`
+   already computed live vs. realized). That's a checklist against facts already available
+   today, not a forecast — and it's the only kind of "pick"/"don't pick" this backtest
+   evidence still supports. Practically: drop Alex's Strong/Avoid and Holdings' buy/wait as
+   pickers (they sort candles, not outcomes — label them informational, not decisions), and
+   gate "Today's picks" on affordability + no earnings + `richness` fair-or-rich instead.
+5. **Cross-sectional relative-strength scoring** — absolute-level technicals (RSI between
    45–60, etc.) are among the weaker-supported edges in the literature; ranking stocks
-   against each other each day has more historical support.
-4. **Earnings blackout** — needs a historical earnings-date source; Tiingo's free tier
+   against each other each day has more historical support. Lower priority than #4: a
+   better *forecast* signal is a different, harder problem than a *defensible pick*, and
+   the latter doesn't require solving the former.
+6. **Earnings blackout** — needs a historical earnings-date source; Tiingo's free tier
    doesn't include one. Unresolved pending a data-source decision.
-5. **Wider universe** — S&P 500 (~500 names) rather than 41 mega-caps/ETFs for `alex-scan`,
+7. **Wider universe** — S&P 500 (~500 names) rather than 41 mega-caps/ETFs for `alex-scan`,
    both for statistical power and to check the sector/cap-tier breakdown
    (`--sector-breakdown`, `--cap-breakdown`) on a real spread of names. For
    `holdings-entry`/`holdings-exit` specifically, a broader range of stock classes
@@ -755,6 +827,11 @@ npm run backtest:alex -- --signal=holdings-exit --source=tiingo --years=10
 # Fit/test split and extra breakdowns — see "Results" above for why:
 npm run backtest:alex -- --source=tiingo --years=10 --split-date=2021-01-01
 npm run backtest:alex -- --source=tiingo --years=10 --sector-breakdown --cap-breakdown
+npm run backtest:alex -- --source=tiingo --years=10 --year-breakdown
+
+# Model a cash-secured put overlay by grade (default 45-DTE, 30-delta — see "Results"):
+npm run backtest:alex -- --source=tiingo --years=10 --csp-overlay
+npm run backtest:alex -- --source=tiingo --years=10 --csp-overlay --csp-dte=30 --csp-delta=0.2
 ```
 
 Or trigger `.github/workflows/backtest.yml` from the Actions tab (needs a `TIINGO_API_KEY`
@@ -800,13 +877,17 @@ same as for price bars.
   not a rigorous confidence interval.
 
 The walk-forward/bucketing logic itself (`engine.ts`, `stats.ts`) is pure and fully unit
-tested (`engine.test.ts`, `stats.test.ts`, 14 tests) — including a regression test that
+tested (`engine.test.ts`, `stats.test.ts`, 39 tests) — including a regression test that
 plants a deliberate future price jump and asserts a day's score is unaffected by it, which
-is the one property this kind of backtest lives or dies on. The raw-record → `Bar` mapping
-for Alpaca and Tiingo (`dataSource.test.ts`) and the Norgate CSV parser (`norgateSource.test.ts`,
-covering header case/order-insensitivity, quoted fields, bad rows, and a full custom
-column-map override) are unit tested too — only the actual network/file-system calls
-(fetching from Alpaca/Tiingo, reading a real NDU export) need live credentials or a real
+is the one property this kind of backtest lives or dies on. The modeled CSP overlay
+(`cspOverlay.ts`, 9 tests) is tested the same way: a dedicated test proves it sizes the
+trade (strike, premium) from `bars[0..i]` only, and that a future price swing changes the
+settlement outcome without changing what the trade was sized at. The raw-record → `Bar`
+mapping for Alpaca and Tiingo (`dataSource.test.ts`) and the Norgate CSV parser
+(`norgateSource.test.ts`, covering header case/order-insensitivity, quoted fields, bad
+rows, and a full custom column-map override) are unit tested too — only the actual
+network/file-system calls (fetching from Alpaca/Tiingo, reading a real NDU export) need
+live credentials or a real
 export and are untestable offline.
 
 **Do not** turn this into a "winning" app. Do not lead with annualized yield, win-rate, or

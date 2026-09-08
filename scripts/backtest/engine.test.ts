@@ -197,4 +197,39 @@ describe("walkForward", () => {
     expect(samples.length).toBeGreaterThan(0);
     expect(samples.every((s) => s.score === null && s.grade === "buy")).toBe(true);
   });
+
+  it("leaves cspReturn/cspAssigned null on every sample when opts.csp isn't given", () => {
+    const bars = makeBars(400);
+    const spyBars = makeBars(400);
+    const samples = walkForward("TEST", bars, spyBars, {
+      evaluate: ALEX,
+      horizons: [5],
+      stride: 50,
+      minLookback: 250,
+    });
+    expect(samples.length).toBeGreaterThan(0);
+    expect(samples.every((s) => s.cspReturn === null && s.cspAssigned === null)).toBe(true);
+  });
+
+  it("attaches a modeled CSP outcome per sample when opts.csp is given", () => {
+    const bars = makeBars(400);
+    const spyBars = makeBars(400);
+    const samples = walkForward("TEST", bars, spyBars, {
+      evaluate: ALEX,
+      horizons: [5],
+      stride: 50,
+      minLookback: 250,
+      csp: { dte: 45, deltaTarget: 0.3, ivLookback: 20, rate: 0.05 },
+    });
+    expect(samples.length).toBeGreaterThan(0);
+    // Not every sample necessarily gets a CSP outcome (modelCspTrade has
+    // its own forward-history requirement independent of this run's
+    // horizons), but at least the early ones — with plenty of both
+    // trailing and forward bars — should.
+    expect(samples.some((s) => s.cspReturn !== null)).toBe(true);
+    for (const s of samples) {
+      expect(s.cspReturn === null || typeof s.cspReturn === "number").toBe(true);
+      expect(s.cspAssigned === null || typeof s.cspAssigned === "boolean").toBe(true);
+    }
+  });
 });
