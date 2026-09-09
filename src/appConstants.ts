@@ -107,6 +107,28 @@ export const COMPANIES: Company[] = [
   { ticker: "PEP",  name: "PepsiCo",            price: 135 },
   { ticker: "DIS",  name: "Disney",             price: 110 },
   { ticker: "SBUX", name: "Starbucks",          price: 95 },
+  { ticker: "TGT",  name: "Target",             price: 135 },
+  { ticker: "LOW",  name: "Lowe's",             price: 255 },
+  { ticker: "YUM",  name: "Yum! Brands",        price: 135 },
+  { ticker: "CMCSA", name: "Comcast",           price: 38 },
+  { ticker: "TMUS", name: "T-Mobile",           price: 230 },
+  // Financials (more)
+  { ticker: "SCHW", name: "Charles Schwab",     price: 85 },
+  { ticker: "BLK",  name: "BlackRock",          price: 950 },
+  // Industrials (more)
+  { ticker: "LMT",  name: "Lockheed Martin",    price: 470 },
+  { ticker: "DE",   name: "Deere",              price: 410 },
+  // Materials
+  { ticker: "FCX",  name: "Freeport-McMoRan",   price: 45 },
+  { ticker: "NEM",  name: "Newmont",            price: 55 },
+  // Real Estate
+  { ticker: "O",    name: "Realty Income",      price: 58 },
+  { ticker: "PLD",  name: "Prologis",           price: 115 },
+  { ticker: "SPG",  name: "Simon Property Group", price: 165 },
+  // Utilities
+  { ticker: "NEE",  name: "NextEra Energy",     price: 72 },
+  { ticker: "DUK",  name: "Duke Energy",        price: 115 },
+  { ticker: "SO",   name: "Southern Company",   price: 92 },
   // Energy
   { ticker: "XOM",  name: "ExxonMobil",         price: 118 },
   { ticker: "CVX",  name: "Chevron",            price: 155 },
@@ -120,6 +142,8 @@ export const COMPANIES: Company[] = [
   { ticker: "MRK",  name: "Merck",              price: 85 },
   { ticker: "TMO",  name: "Thermo Fisher",      price: 450 },
   { ticker: "GILD", name: "Gilead Sciences",    price: 110 },
+  { ticker: "BMY",  name: "Bristol Myers Squibb", price: 58 },
+  { ticker: "CVS",  name: "CVS Health",         price: 65 },
   // Speculative / Small
   { ticker: "F",    name: "Ford",               price: 14 },
   { ticker: "SOFI", name: "SoFi",               price: 18 },

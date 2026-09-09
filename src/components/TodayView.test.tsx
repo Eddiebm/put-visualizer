@@ -10,7 +10,7 @@ beforeEach(() => {
 describe("TodayView", () => {
   it("shows a scanning message, then a 'no trade today' fallback with no live data", async () => {
     render(<TodayView capital={30000} onLoadTrade={() => {}} onPicksReady={() => {}} onViewChart={() => {}} />);
-    expect(screen.getByText(/Scanning \d+ stocks/)).toBeInTheDocument();
+    expect(screen.getByText("Scanning stocks…")).toBeInTheDocument();
     await waitFor(() => expect(screen.getByText("No trade today.")).toBeInTheDocument());
   });
 
@@ -21,6 +21,49 @@ describe("TodayView", () => {
     const arg = onPicksReady.mock.calls[0][0];
     expect(arg.picks).toEqual([]);
     expect(arg.totalScanned).toBeGreaterThan(0);
+  });
+
+  describe("scheduled-scan cache shortlist", () => {
+    // 25 fabricated cached results (more than SHORTLIST_SIZE=20), scored
+    // so ranking is unambiguous: TICK00 highest, TICK24 lowest.
+    const CACHED_RESULTS = Array.from({ length: 25 }, (_, i) => ({
+      sym: `TICK${String(i).padStart(2, "0")}`, name: `Ticker ${i}`, price: 100,
+      score: 100 - i, grade: { label: "x", color: "#000", bg: "#fff" },
+    }));
+
+    function mockCacheAndTrackLiveFetches() {
+      const liveSymbolsRequested = new Set<string>();
+      vi.stubGlobal(
+        "fetch",
+        vi.fn((url: string) => {
+          if (url.includes("/api/scan-cache")) {
+            return Promise.resolve({ ok: true, json: () => Promise.resolve({ available: true, results: CACHED_RESULTS }) });
+          }
+          if (url.includes("/api/earnings")) {
+            return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+          }
+          // /api/quote, /api/history, /api/option all carry ?symbol=
+          const m = /[?&]symbol=([^&]+)/.exec(url);
+          if (m) liveSymbolsRequested.add(m[1]);
+          return Promise.resolve({ ok: false, json: () => Promise.resolve({}) });
+        })
+      );
+      return liveSymbolsRequested;
+    }
+
+    it("only does a live fetch for the top SHORTLIST_SIZE cached tickers by score, not the whole cached universe", async () => {
+      const liveSymbolsRequested = mockCacheAndTrackLiveFetches();
+      const onPicksReady = vi.fn();
+      render(<TodayView capital={30000} onLoadTrade={() => {}} onPicksReady={onPicksReady} onViewChart={() => {}} />);
+      await waitFor(() => expect(onPicksReady).toHaveBeenCalled());
+
+      expect(onPicksReady.mock.calls[0][0].totalScanned).toBe(20);
+      expect(liveSymbolsRequested.size).toBe(20);
+      expect(liveSymbolsRequested.has("TICK00")).toBe(true); // highest score
+      expect(liveSymbolsRequested.has("TICK19")).toBe(true); // 20th-highest — the cutoff
+      expect(liveSymbolsRequested.has("TICK20")).toBe(false); // 21st — just past the cutoff
+      expect(liveSymbolsRequested.has("TICK24")).toBe(false); // lowest score
+    });
   });
 });
 

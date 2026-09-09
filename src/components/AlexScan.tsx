@@ -30,12 +30,38 @@ export function AlexScan({ capital, onLoad, onViewChart }: AlexScanProps) {
   const [sortKey, setSortKey] = useState<SortKey>("score");
   const [sortDir, setSortDir] = useState<"desc" | "asc">("desc");
   const [expanded, setExpanded] = useState<string | null>(null);
+  // Set once a scan completes — distinguishes "read the scheduled cache"
+  // from "scanned live, myself, just now." Shown in the UI rather than
+  // silently swapped: a cached scan can be hours stale (see
+  // api/cron-scan.ts's own docstring), and a user comparing this count
+  // against COMPANIES.length deserves to know which kind of run they're
+  // looking at, not just a number.
+  const [cachedAt, setCachedAt] = useState<string | null>(null);
 
   useEffect(() => { runScan(); }, []);
 
   async function runScan() {
     setLoading(true);
     setExpanded(null);
+    setCachedAt(null);
+
+    // Tier 1 of the two-tier scan design (see README's "Scanning beyond
+    // the live-fetch ceiling"): try the scheduled full-universe cache
+    // first (api/cron-scan.ts + api/scan-cache.ts) — one fast request,
+    // and can cover a watchlist larger than a live per-visit scan could
+    // afford under api/history.ts's shared rate limit. Falls back to the
+    // exact live per-ticker scan this always did (unchanged below) when
+    // the cache isn't configured or is empty — a pure optional
+    // accelerant, never a hard dependency.
+    const cacheData = await fetch(`/api/scan-cache`).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+    if (cacheData?.available && Array.isArray(cacheData.results) && cacheData.results.length > 0) {
+      setResults(cacheData.results);
+      setCondition(cacheData.condition ?? null);
+      setCachedAt(cacheData.scannedAt ?? new Date().toISOString());
+      setLastRun(new Date());
+      setLoading(false);
+      return;
+    }
 
     const exp30 = targetExpiration(30);
     const [spyData, earningsBulk] = await Promise.all([
@@ -110,7 +136,7 @@ export function AlexScan({ capital, onLoad, onViewChart }: AlexScanProps) {
         <div>
           <div style={{ fontWeight: 700, fontSize: 17, color: "#0f172a" }}>🔭 Alex's scan</div>
           <div style={{ fontSize: 13, color: "#64748b", marginTop: 2 }}>
-            A technical read on {COMPANIES.length} stocks/ETFs — separate from the options-pricing scan on "Today's picks."
+            A technical read on {results.length || COMPANIES.length} stocks/ETFs — separate from the options-pricing scan on "Today's picks."
           </div>
         </div>
         <button type="button" onClick={runScan} style={{ ...styles.sizingBtn, marginLeft: 0 }}>
@@ -132,7 +158,9 @@ export function AlexScan({ capital, onLoad, onViewChart }: AlexScanProps) {
           </div>
           <div style={{ fontSize: 13, color: "#0f172a", lineHeight: 1.5 }}>{condition.summary}</div>
           <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 8 }}>
-            scanned {lastRun ? lastRun.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "just now"} · needs an Alpaca market-data key for real price history
+            {cachedAt
+              ? `cached scan from ${new Date(cachedAt).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })} — see api/cron-scan.ts for how fresh this can be`
+              : `scanned live ${lastRun ? lastRun.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "just now"} · needs an Alpaca market-data key for real price history`}
           </div>
         </div>
       )}

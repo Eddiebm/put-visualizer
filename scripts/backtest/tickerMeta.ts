@@ -87,6 +87,33 @@ const RAW: Record<string, TickerMeta> = {
   PEP: { sector: "Consumer Staples", capTier: "mega" },
   DIS: { sector: "Communication Services", capTier: "large" },
   SBUX: { sector: "Consumer Discretionary", capTier: "large" },
+  TGT: { sector: "Consumer Discretionary", capTier: "large" },
+  LOW: { sector: "Consumer Discretionary", capTier: "mega" },
+  YUM: { sector: "Consumer Discretionary", capTier: "large" },
+  CMCSA: { sector: "Communication Services", capTier: "mega" },
+  TMUS: { sector: "Communication Services", capTier: "mega" },
+
+  // Financials (more)
+  SCHW: { sector: "Financials", capTier: "large" },
+  BLK: { sector: "Financials", capTier: "mega" },
+
+  // Industrials (more)
+  LMT: { sector: "Industrials", capTier: "large" },
+  DE: { sector: "Industrials", capTier: "large" },
+
+  // Materials
+  FCX: { sector: "Materials", capTier: "large" },
+  NEM: { sector: "Materials", capTier: "large" },
+
+  // Real Estate
+  O: { sector: "Real Estate", capTier: "large" },
+  PLD: { sector: "Real Estate", capTier: "large" },
+  SPG: { sector: "Real Estate", capTier: "large" },
+
+  // Utilities
+  NEE: { sector: "Utilities", capTier: "mega" },
+  DUK: { sector: "Utilities", capTier: "large" },
+  SO: { sector: "Utilities", capTier: "large" },
 
   // Energy
   XOM: { sector: "Energy", capTier: "mega" },
@@ -102,6 +129,8 @@ const RAW: Record<string, TickerMeta> = {
   MRK: { sector: "Healthcare", capTier: "large" },
   TMO: { sector: "Healthcare", capTier: "large" },
   GILD: { sector: "Healthcare", capTier: "large" },
+  BMY: { sector: "Healthcare", capTier: "large" },
+  CVS: { sector: "Healthcare", capTier: "large" },
 
   // Speculative / Small
   F: { sector: "Consumer Discretionary", capTier: "mid" },

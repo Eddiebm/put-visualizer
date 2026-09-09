@@ -129,6 +129,98 @@ status badge shows whether the last sync succeeded, failed, or the backup isn't 
 at all. Losing the connection just falls back to the local copy, same as every other
 optional integration in this app.
 
+## Scanning a bigger universe (optional)
+
+`COMPANIES` (`src/appConstants.ts`, 95 tickers as of the last expansion) feeds Today's
+picks and Alex's scan, and both do a live per-ticker fetch on every visit — see
+**Rate limiting**'s **Watchlist size** note for the actual ceiling that puts on `COMPANIES`
+(roughly 100 tickers, shared across both tabs' `/api/history` calls in one 5-minute
+window). Scanning meaningfully more than that needs a different shape, not a bigger array:
+
+**A two-tier design.** Alex's scan is a daily-bar technical read (SMA/RSI/trend) — a cache
+that's a few hours stale is functionally identical to a live one for that signal, so it can
+scale to a much larger watchlist via a scheduled job instead of a live per-visit fetch.
+Today's picks needs real option premiums — a 45-minute-old price is a materially different
+number from what an order would actually fill at — so it stays live, but gets smarter: it
+uses the cached technical scan to shortlist the top `SHORTLIST_SIZE` (20) candidates by
+score, then does a live quote+option fetch for just that shortlist instead of the whole
+watchlist. The shortlist ranking is a compute-budget heuristic, not a suitability
+judgment — Alex's score has no proven predictive value (see **Backtesting this app's
+buy/sell signals** below), so a name left off the shortlist isn't a worse trade, only "not
+checked this cycle."
+
+**Pieces:**
+- `api/cron-scan.ts` — a scheduled (Vercel Cron) job that scans a watchlist once, writing
+  results to a new D1 table (`scan_cache`). Reuses the same `analyzeStock()` Alex's scan
+  already calls, so the cached score is computed identically to a live one.
+- `api/scan-cache.ts` — reads that cache back, fast, for `AlexScan.tsx` and (as a shortlist
+  source only) `TodayView.tsx`. Optional accelerant: `{available:false}` when D1 isn't
+  configured or the cache is empty, and both callers fall back to their original live
+  per-visit scan exactly as before this existed.
+
+**One-time setup**, on top of the journal-backup D1 setup above (reuses the same
+`CLOUDFLARE_ACCOUNT_ID`/`CLOUDFLARE_D1_DATABASE_ID`/`CLOUDFLARE_API_TOKEN`, and the existing
+`ALPACA_KEY_ID`/`ALPACA_SECRET_KEY`, `FINNHUB_API_KEY` — no new provider accounts needed
+beyond what live scanning already uses):
+
+1. Add the cache table to your D1 database:
+   ```sql
+   CREATE TABLE scan_cache (
+     ticker TEXT PRIMARY KEY,
+     data TEXT NOT NULL,
+     scanned_at TEXT NOT NULL
+   );
+   ```
+2. Pick a secret and set it as `CRON_SECRET` — this is compared against the
+   `Authorization: Bearer` header Vercel Cron sends automatically once the var exists,
+   so `api/cron-scan.ts` refuses to run for anyone else:
+   ```bash
+   printf '%s' 'YOUR_OWN_SECRET' | vercel env add CRON_SECRET production
+   ```
+3. `vercel.json` already declares the schedule (`0 13 * * 1-5`, weekday mornings —
+   adjust to taste). Redeploy and it starts firing.
+4. Optional: `CRON_WATCHLIST` (comma-separated tickers) scans that list instead of
+   `COMPANIES`. **Left unset on purpose here** — this project has no way to verify real,
+   current index-membership data (e.g. an actual S&P 500 constituent list) from inside the
+   environment this was built in, and shipping a stale or wrong list under that name would
+   be exactly the kind of unearned claim the rest of this app tries hard not to make (see
+   **Backtesting this app's buy/sell signals** below for the same principle applied
+   elsewhere). Point `CRON_WATCHLIST` at your own real, maintained ticker list if you want
+   broader-than-`COMPANIES` coverage — the code supports any size; sourcing a trustworthy
+   large list is on you.
+
+**Cost, for real numbers** (pulled from public pricing pages, not verified against a live
+account): the *default* setup (`COMPANIES`, 95 tickers, ~96 Alpaca calls once a day) likely
+fits inside Vercel's free Hobby tier — Hobby allows once-daily cron and up to 60s of
+function duration, and 96 paced Alpaca calls comfortably finishes inside that window. Only
+pointing `CRON_WATCHLIST` at something S&P-500-scale (~500 tickers, ~1,500 Alpaca calls)
+pushes past Hobby's limits — pacing that many calls under Alpaca's free-tier 200
+requests/minute takes ~7-8 minutes, which needs Vercel Pro (~$20/month) for per-minute cron
+and longer function duration. Alpaca and Cloudflare D1 both likely stay free either way —
+see the "what would it cost" thread in this project's own history for the full breakdown
+(Alpaca's free tier's 15-minute data delay is already what this app discloses everywhere;
+D1's free tier is 5M row-reads/100K row-writes per day, nowhere close to what even an
+S&P-500-scale daily scan needs).
+
+**Staleness, stated plainly:** two layers stack. Alpaca's own free-tier delay (~15 minutes,
+already disclosed in the app's footer) applies either way. On top of that, a cached scan is
+only as fresh as the last cron run — at a daily cadence, Alex's scan could be showing
+up to a day-old technical read. That's the actual trade being made for scale: Alex's scan
+gains reach and loses some freshness it didn't need much of anyway (daily bars don't move
+minute to minute); Today's picks keeps its freshness by never showing a cached price, only
+using the cache to decide which ~20 names are worth a live look.
+
+**Not verified against a live deployment from this environment** — no Vercel Cron, D1, or
+production Alpaca/Finnhub credentials are reachable from here to test an actual scheduled
+run end to end (same caveat `api/journal.ts`'s own D1 code already carries). Trigger a real
+invocation manually after deploying, before trusting this in production:
+```bash
+curl -X POST https://your-deployment.vercel.app/api/cron-scan \
+  -H "Authorization: Bearer YOUR_CRON_SECRET"
+```
+A `{"available":true,"scanned":N,"failed":0}` response means it wrote real rows; then load
+Alex's scan and confirm it reads "cached scan from ..." instead of "scanned live ...".
+
 ## Securing the AI features
 
 `api/chat.ts`, `api/analyze.ts`, and `api/lesson.ts` all proxy to the Anthropic API using
@@ -214,24 +306,26 @@ same.
 
 ### Watchlist size — why `COMPANIES` isn't bigger
 
-`src/appConstants.ts`'s `COMPANIES` (76 tickers as of the last expansion, up from 41) feeds
-every automated scan in the app — Today's picks and Alex's scan both loop over the full
-list on every run. Today's picks calls `/api/quote`, `/api/history`, and `/api/option` once
-per ticker; Alex's scan calls `/api/history` once per ticker plus one shared `/api/earnings`
-call. Both hit `/api/history` — the same rate limiter, same 5-minute window (see **Rate
-limiting** above, 200 requests/5min) — so a user running Today's picks and then Alex's scan
-inside the same window sums their `/api/history` calls against one shared ceiling: roughly
-`2 × COMPANIES.length + 1` requests. At 76 tickers that's ~153, leaving real headroom for a
-refresh click or a Holdings ticker check in the same window; at 100 it's ~201, already over
-the limit *before* accounting for anything else. That's the actual ceiling on this list's
-size — not an arbitrary choice, and not something more rows alone can fix.
+`src/appConstants.ts`'s `COMPANIES` (95 tickers as of the last expansion, up from 41) is what
+**live, on-demand** per-visit scanning can afford. Today's picks calls `/api/quote`,
+`/api/history`, and `/api/option` once per ticker; Alex's scan calls `/api/history` once per
+ticker plus one shared `/api/earnings` call. Both hit `/api/history` — the same rate
+limiter, same 5-minute window (see **Rate limiting** above, 200 requests/5min) — so a user
+running Today's picks and then Alex's scan inside the same window sums their `/api/history`
+calls against one shared ceiling: roughly `2 × N + 1` requests for a live scan of `N`
+tickers. At 95 that's ~191, leaving a real if narrow buffer for a refresh click or a
+Holdings ticker check in the same window; at 100 it's already tight, and beyond that a
+live-only design starts failing on its own before accounting for anything else. That's the
+actual ceiling on a *live* watchlist's size — not an arbitrary choice, and not something
+more rows alone can fix.
 
-Growing meaningfully past ~100 (S&P 500-scale) needs a different architecture: a
-scheduled/cached pre-scan (cron job populates results server-side, the live app reads the
-cache) instead of an on-demand per-visit fetch of every ticker's quote/history/option. That's
-a real project, not a bigger array — tracked as a "Next steps" item on the backtest side
-(`scripts/backtest/` already supports scanning far more than 76 via `--tickers`/`--universe`,
-since it's offline and not rate-limited the same way) but not yet built for the live app.
+Growing meaningfully past that (S&P-500 scale) needs a different architecture, not a bigger
+array — see **Scanning a bigger universe (optional)** above, which is exactly that: a
+scheduled/cached pre-scan for Alex's scan (where a few hours of staleness doesn't matter),
+paired with a live top-up for just a shortlist on Today's picks (where freshness does).
+`scripts/backtest/` has supported scanning far more than 95 for a while now, separately,
+via `--tickers`/`--universe` — it's offline and was never rate-limited the same way the live
+app is.
 
 ## Security headers
 
@@ -358,7 +452,7 @@ tree is TypeScript now (`strict: true`) — see **Since then** below.
 ## Running the tests and linter
 
 ```bash
-npm test          # Vitest — 482 tests: every pure module in src/lib/, every api/*.ts
+npm test          # Vitest — 501 tests: every pure module in src/lib/, every api/*.ts
                   # Edge function, every component in src/components/ (RTL),
                   # App.tsx's own orchestration (tabs, sync, tour, journal, Tasty),
                   # and the Alex's-scan backtest harness (scripts/backtest/)
@@ -741,6 +835,34 @@ aggregation, grouping closed trades by ISO week).
     an in-app `BacktestDisclosure` banner stating their actual backtest result in place,
     not just in this README. 20 new tests. Verified visually (Playwright against the real
     dev server) that the disclosure banners render correctly on Alex's scan and Holdings.
+36. Expanded `COMPANIES` from 76 to 95 tickers (more consumer discretionary, financials,
+    industrials, materials, real estate, and utilities names) — the practical safe ceiling
+    for a *live* per-visit scan under the shared `/api/history` rate limit (see **Watchlist
+    size** below). `TICKER_META` updated in lockstep for the 19 new tickers. Test suite
+    482 unchanged (no new tests needed — the existing guardrail in `appConstants.test.ts`
+    already checks the math dynamically against `COMPANIES.length`, and it still passes at
+    95).
+37. Built the two-tier scan design scoped out in this session's own "what would it cost"
+    discussion — see the new **Scanning a bigger universe (optional)** section above for
+    the full writeup. In short: `api/cron-scan.ts` (a scheduled Vercel Cron job) scans a
+    watchlist once and caches results to a new Cloudflare D1 table
+    (`scan_cache`); `api/scan-cache.ts` reads it back fast. Alex's scan reads straight from
+    that cache when it's available (a daily-bar technical read tolerates being a few hours
+    stale); Today's picks uses the cache only to shortlist the top 20 candidates by score,
+    then does a real live quote+option fetch for just those — the one number in this app
+    where a 45-minute-old value is actually a different, wrong number. Both fall back to
+    their original live per-ticker scan, unchanged, when the cache isn't configured or
+    empty — a pure optional accelerant. Deliberately does NOT hardcode "the S&P 500" or any
+    other index as a default watchlist — no way to verify real, current index-membership
+    data from inside this environment, and shipping a stale/wrong list under that name
+    would be an unearned claim; `CRON_WATCHLIST` is there for a real list you supply.
+    19 new tests (`api/cron-scan.test.ts`, `api/scan-cache.test.ts`, plus coverage in
+    `AlexScan.test.tsx`/`TodayView.test.tsx`) — including one that caught a real bug before
+    it shipped: the market-condition sentinel cache row was inflating the reported
+    `scanned` count by one. **Not verified against a live deployment** — no Vercel Cron, D1,
+    or production Alpaca/Finnhub credentials are reachable from this environment to test an
+    actual scheduled run end to end; see that section's own note on how to verify a real
+    invocation after deploying.
 
 ## Backtesting this app's buy/sell signals (`scripts/backtest/`)
 

@@ -11,7 +11,15 @@ import { COMPANIES } from "../appConstants";
 import { styles } from "../styles";
 import { ExplainCheckItem, BacktestDisclosure } from "./shared";
 import { MorningGates } from "./MorningGates";
-import type { Richness, Grade, MarketCondition } from "../types";
+import type { Richness, Grade, MarketCondition, TechnicalAnalysis } from "../types";
+
+// Tier 2 of the two-tier scan design (see README's "Scanning beyond the
+// live-fetch ceiling"). How many cache-shortlisted candidates get a real
+// live quote+option fetch — small enough to stay well under the shared
+// /api/quote and /api/option rate limits even stacked with everything
+// else a visit might do, large enough that affordability/earnings/option-
+// availability filtering downstream still usually leaves a few real picks.
+const SHORTLIST_SIZE = 20;
 
 // ─── Today's AI Coach View ───────────────────────────────────────────────────
 
@@ -117,8 +125,32 @@ export function TodayView({ capital, onLoadTrade, onPicksReady, onViewChart }: T
       .then(r => r.ok ? r.json() : null).catch(() => null);
     const earningsMap = earningsBulk?.earningsMap ?? null;
 
+    // Tier 2 of the two-tier scan design (see README's "Scanning beyond
+    // the live-fetch ceiling"): if the scheduled technical-scan cache
+    // (api/cron-scan.ts) is available, use its score to shortlist
+    // candidates from whatever wider universe it covers, then do a LIVE
+    // quote+option fetch for just that shortlist below — unlike Alex's
+    // scan, this never shows a price straight from the cache, since a
+    // 45-minute-old option premium is a materially different number from
+    // the one an order would actually fill at. The shortlist ranking
+    // itself is a compute-budget heuristic, not a suitability judgment:
+    // Alex's score has no proven predictive value (see that scan's own
+    // backtest disclosure), so a name left off this shortlist isn't being
+    // called a worse trade, only "not checked this cycle." Falls back to
+    // scanning all of COMPANIES live, unchanged, when the cache isn't
+    // configured or is empty.
+    const cacheData = await fetch(`/api/scan-cache`).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+    let companiesToScan: { ticker: string; name: string; price: number }[] = COMPANIES;
+    if (cacheData?.available && Array.isArray(cacheData.results) && cacheData.results.length > 0) {
+      companiesToScan = (cacheData.results as TechnicalAnalysis[])
+        .slice()
+        .sort((a, b) => b.score - a.score)
+        .slice(0, SHORTLIST_SIZE)
+        .map((r) => ({ ticker: r.sym, name: r.name, price: r.price }));
+    }
+
     const results: ScanResult[] = await Promise.all(
-      COMPANIES.map(async (company): Promise<ScanResult> => {
+      companiesToScan.map(async (company): Promise<ScanResult> => {
         const sym = company.ticker;
         const base: ScanUnavailable = { sym, name: company.name, available: false };
 
@@ -191,7 +223,7 @@ export function TodayView({ capital, onLoadTrade, onPicksReady, onViewChart }: T
     setPicks(top);
     setCondition(cond);
     setLastRun(new Date());
-    onPicksReady?.({ picks: top, condition: cond, totalScanned: COMPANIES.length, qualified: qualified.length });
+    onPicksReady?.({ picks: top, condition: cond, totalScanned: companiesToScan.length, qualified: qualified.length });
     setLoading(false);
   }
 
@@ -200,7 +232,7 @@ export function TodayView({ capital, onLoadTrade, onPicksReady, onViewChart }: T
       <div style={{ padding: "64px 0", textAlign: "center" }}>
         <div style={{ fontSize: 32, marginBottom: 16 }}>🔍</div>
         <div style={{ fontWeight: 700, fontSize: 16, color: "#0f172a", marginBottom: 6 }}>
-          Scanning {COMPANIES.length} stocks…
+          Scanning stocks…
         </div>
         <div style={{ fontSize: 13, color: "#94a3b8" }}>
           Checking live prices, option premiums, and price history to find today's best setups.
